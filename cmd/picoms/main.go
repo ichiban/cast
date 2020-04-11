@@ -16,7 +16,6 @@ import (
 )
 
 func main() {
-
 	var verbose bool
 
 	flag.BoolVar(&verbose, "verbose", false, "")
@@ -37,7 +36,7 @@ func main() {
 		panic(err)
 	}
 
-	s, err := picoms.NewServer(i, 8200, 1900, 3*time.Second)
+	s, err := picoms.NewServer(i, 8200, 1900, 3*time.Second, flag.Args()[0])
 	if err != nil {
 		panic(err)
 	}

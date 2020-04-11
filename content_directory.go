@@ -2,9 +2,15 @@ package picoms
 
 import (
 	"encoding/xml"
+	"errors"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"path"
+	"path/filepath"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -19,106 +25,78 @@ const (
 	browseDirectChildren = "BrowseDirectChildren"
 )
 
+const (
+	classStorageFolder = "object.container.storageFolder"
+	classItem          = "object.item"
+)
+
 type ContentDirectory struct {
+	http.Server
+
+	Path string
 }
 
-func (c *ContentDirectory) handle(r *request) (*response, error) {
-	switch {
-	case r.Body.GetSearchCapabilities != nil:
-		return nil, nil
-	case r.Body.GetSortCapabilities != nil:
-		return nil, nil
-	case r.Body.GetSystemUpdateID != nil:
-		return nil, nil
-	case r.Body.Browse != nil:
-		d := DIDLLite{
-			XMLNSDC:   "http://purl.org/dc/elements/1.1/",
-			XMLNSUPnP: "urn:schemas-upnp-org:metadata-1-0/upnp/",
-			Containers: []container{
-				{
-					ID:          64,
-					ParentID:    0,
-					Restricted:  1,
-					Searchable:  1,
-					ChildCount:  4,
-					Title:       "Browse Folders",
-					Class:       "object.container.storageFolder",
-					StorageUsed: -1,
-				},
-				{
-					ID:          1,
-					ParentID:    0,
-					Restricted:  1,
-					Searchable:  1,
-					ChildCount:  4,
-					Title:       "Music",
-					Class:       "object.container.storageFolder",
-					StorageUsed: -1,
-				},
-				{
-					ID:          3,
-					ParentID:    0,
-					Restricted:  1,
-					Searchable:  1,
-					ChildCount:  4,
-					Title:       "Pictures",
-					Class:       "object.container.storageFolder",
-					StorageUsed: -1,
-				},
-				{
-					ID:          2,
-					ParentID:    0,
-					Restricted:  1,
-					Searchable:  1,
-					ChildCount:  2,
-					Title:       "Video",
-					Class:       "object.container.storageFolder",
-					StorageUsed: -1,
-				},
-			},
-		}
-
-		b, err := xml.MarshalIndent(&d, "", "  ")
-		if err != nil {
-			return nil, err
-		}
-
-		return &response{
-			XMLNS:         soapEnvelope,
-			EncodingStyle: soapEncoding,
-			Body: responseBody{
-				BrowseResponse: &browseResponse{
-					XMLNS:          serviceContentDirectory1,
-					Result:         string(b),
-					NumberReturned: 4,
-					TotalMatches:   4,
-					UpdateID:       0,
-				},
-			},
-		}, nil
-	case r.Body.Search != nil:
-		return nil, nil
-	case r.Body.CreateObject != nil:
-		return nil, nil
-	case r.Body.DestroyObject != nil:
-		return nil, nil
-	case r.Body.UpdateObject != nil:
-		return nil, nil
-	case r.Body.ImportResource != nil:
-		return nil, nil
-	case r.Body.ExportResource != nil:
-		return nil, nil
-	case r.Body.StopTransferResource != nil:
-		return nil, nil
-	case r.Body.GetTransferProgress != nil:
-		return nil, nil
-	case r.Body.DeleteResource != nil:
-		return nil, nil
-	case r.Body.CreateReference != nil:
-		return nil, nil
-	default:
-		return nil, nil
+func (c *ContentDirectory) URL(p ...string) *url.URL {
+	return &url.URL{
+		Scheme: "http",
+		Host:   c.Addr,
+		Path:   path.Join(p...),
 	}
+}
+
+func (c *ContentDirectory) Browse(objectID, browseFlag, filter string, startingIndex, requestedCount uint32, sortCriteria string) (*DIDLLite, uint32, uint32, uint32, error) {
+	switch browseFlag {
+	case browseMetaData:
+		return nil, 0, 0, 0, errors.New("not implemented")
+	case browseDirectChildren:
+	default:
+		return nil, 0, 0, 0, fmt.Errorf("unknown browse flag: %s", browseFlag)
+	}
+
+	dirname := objectID
+	if dirname == "0" {
+		dirname = c.Path
+	}
+
+	fis, err := ioutil.ReadDir(dirname)
+	if err != nil {
+		return nil, 0, 0, 0, err
+	}
+
+	d := DIDLLite{
+		XMLNSDC:   "http://purl.org/dc/elements/1.1/",
+		XMLNSUPnP: "urn:schemas-upnp-org:metadata-1-0/upnp/",
+	}
+	for _, fi := range fis {
+		if fi.IsDir() {
+			d.Containers = append(d.Containers, container{
+				ID:          filepath.Join(dirname, fi.Name()),
+				Restricted:  true,
+				ParentID:    dirname,
+				Searchable:  true,
+				Title:       fi.Name(),
+				Class:       classStorageFolder,
+				StorageUsed: fi.Size(),
+			})
+		} else {
+			path, err := filepath.Rel(c.Path, filepath.Join(dirname, fi.Name()))
+			if err != nil {
+				return nil, 0, 0, 0, err
+			}
+			d.Items = append(d.Items, item{
+				ID:         filepath.Join(dirname, fi.Name()),
+				ParentID:   dirname,
+				Restricted: true,
+				Title:      fi.Name(),
+				Class:      "",
+				Res: res{
+					ProtocolInfo: "*:*:*:*",
+					URL:          c.URL("media", path).String(),
+				},
+			})
+		}
+	}
+	return &d, uint32(len(fis)), uint32(len(fis)), 0, nil
 }
 
 func (c *ContentDirectory) Control(w http.ResponseWriter, r *http.Request) {
@@ -127,6 +105,7 @@ func (c *ContentDirectory) Control(w http.ResponseWriter, r *http.Request) {
 		panic(err)
 	}
 	r.Body.Close()
+
 	var req request
 	if err := xml.Unmarshal(b, &req); err != nil {
 		panic(err)
@@ -145,6 +124,93 @@ func (c *ContentDirectory) Control(w http.ResponseWriter, r *http.Request) {
 	if _, err := w.Write(b); err != nil {
 		panic(err)
 	}
+}
+
+func (c *ContentDirectory) handle(r *request) (*response, error) {
+	switch {
+	case r.Body.GetSearchCapabilities != nil:
+		log.WithFields(log.Fields{}).Info("GetSearchCapabilities")
+		return nil, nil
+	case r.Body.GetSortCapabilities != nil:
+		log.WithFields(log.Fields{}).Info("GetSortCapabilities")
+		return &response{
+			XMLNS:         soapEnvelope,
+			EncodingStyle: soapEncoding,
+			Body: responseBody{
+				GetSortCapabilitiesResponse: &getSortCapabilitiesResponse{
+					SortCaps: "",
+				},
+			},
+		}, nil
+	case r.Body.GetSystemUpdateID != nil:
+		log.Info("GetSystemUpdateID")
+		return nil, nil
+	case r.Body.Browse != nil:
+		log.WithFields(log.Fields{
+			"ObjectID":       r.Body.Browse.ObjectID,
+			"BrowseFlag":     r.Body.Browse.BrowseFlag,
+			"Filter":         r.Body.Browse.Filter,
+			"StartingIndex":  r.Body.Browse.StartingIndex,
+			"RequestedCount": r.Body.Browse.RequestedCount,
+			"SortCriteria":   r.Body.Browse.SortCriteria,
+		}).Info("Browse")
+		d, numberReturned, totalMatches, updateID, err := c.Browse(r.Body.Browse.ObjectID, r.Body.Browse.BrowseFlag, r.Body.Browse.Filter, r.Body.Browse.StartingIndex, r.Body.Browse.RequestedCount, r.Body.Browse.SortCriteria)
+
+		b, err := xml.MarshalIndent(&d, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+
+		return &response{
+			XMLNS:         soapEnvelope,
+			EncodingStyle: soapEncoding,
+			Body: responseBody{
+				BrowseResponse: &browseResponse{
+					XMLNS:          serviceContentDirectory1,
+					Result:         string(b),
+					NumberReturned: numberReturned,
+					TotalMatches:   totalMatches,
+					UpdateID:       updateID,
+				},
+			},
+		}, nil
+	case r.Body.Search != nil:
+		log.Info("Search")
+		return nil, nil
+	case r.Body.CreateObject != nil:
+		log.Info("CreateObject")
+		return nil, nil
+	case r.Body.DestroyObject != nil:
+		log.Info("DestroyObject")
+		return nil, nil
+	case r.Body.UpdateObject != nil:
+		log.Info("UpdateObject")
+		return nil, nil
+	case r.Body.ImportResource != nil:
+		log.Info("ImportResource")
+		return nil, nil
+	case r.Body.ExportResource != nil:
+		log.Info("ExportResource")
+		return nil, nil
+	case r.Body.StopTransferResource != nil:
+		log.Info("StopTransferResource")
+		return nil, nil
+	case r.Body.GetTransferProgress != nil:
+		log.Info("GetTransferProgress")
+		return nil, nil
+	case r.Body.DeleteResource != nil:
+		log.Info("DeleteResource")
+		return nil, nil
+	case r.Body.CreateReference != nil:
+		log.Info("CreateReference")
+		return nil, nil
+	default:
+		return nil, nil
+	}
+}
+
+func (c *ContentDirectory) Event(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
 }
 
 type request struct {
@@ -217,6 +283,7 @@ type getSystemUpdateIDResponse struct {
 type browse struct {
 	ObjectID       string
 	BrowseFlag     string
+	Filter         string
 	StartingIndex  uint32
 	RequestedCount uint32
 	SortCriteria   string
@@ -321,27 +388,4 @@ type createReference struct {
 
 type createReferenceResponse struct {
 	NewID string
-}
-
-func (c *ContentDirectory) Event(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-type DIDLLite struct {
-	XMLName    xml.Name    `xml:"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/ DIDL-Lite"`
-	XMLNSDC    string      `xml:"xmlns:dc,attr"`
-	XMLNSUPnP  string      `xml:"xmlns:upnp,attr"`
-	Containers []container `xml:"container"`
-}
-
-type container struct {
-	ID         int `xml:"id,attr"`
-	ParentID   int `xml:"parentID,attr"`
-	Restricted int `xml:"restricted,attr"`
-	Searchable int `xml:"searchable,attr"`
-	ChildCount int `xml:"childCount,attr"`
-
-	Title       string `xml:"dc:title"`
-	Class       string `xml:"upnp:class"`
-	StorageUsed int    `xml:"upnp:storageUsed"`
 }

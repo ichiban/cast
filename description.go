@@ -7,6 +7,12 @@ import (
 	"fmt"
 )
 
+const (
+	deviceType  = "urn:schemas-upnp-org:device:MediaServer:1"
+	serviceType = "urn:schemas-upnp-org:service:ContentDirectory:1"
+	serviceID   = "urn:upnp-org:serviceId:ContentDirectory"
+)
+
 const xmlDeclaration = "<?xml version=\"1.0\"?>\n"
 
 // device
@@ -19,7 +25,7 @@ func (s *Server) Describe() ([]byte, error) {
 			Minor: 0,
 		},
 		Device: device{
-			DeviceType:   "urn:schemas-upnp-org:device:MediaServer:1",
+			DeviceType:   deviceType,
 			FriendlyName: "picoms",
 			Manufacturer: "ichiban",
 			ModelName:    serverProductToken,
@@ -27,8 +33,8 @@ func (s *Server) Describe() ([]byte, error) {
 			ServiceList: serviceList{
 				Services: []service{
 					{
-						ServiceType: "urn:schemas-upnp-org:service:ContentDirectory:1",
-						ServiceID:   "urn:upnp-org:serviceId:ContentDirectory",
+						ServiceType: serviceType,
+						ServiceID:   serviceID,
 						SCPDURL:     "/service",
 						ControlURL:  "/control",
 						EventSubURL: "/event",
@@ -173,14 +179,14 @@ func (c *ContentDirectory) Describe() ([]byte, error) {
 			{Name: argTypeObjectID, DataType: dataTypeString},
 			{Name: argTypeResult, DataType: dataTypeString},
 			{Name: argTypeSearchCriteria, DataType: dataTypeString},
-			{Name: argTypeBrowseFlag, DataType: dataTypeString, AllowedValueList: &allowedValueList{allowedValues: []string{"BrowseMetadata", "BrowseDirectChildren"}}},
+			{Name: argTypeBrowseFlag, DataType: dataTypeString, AllowedValueList: &allowedValueList{AllowedValues: []string{browseMetaData, browseDirectChildren}}},
 			{Name: argTypeFilter, DataType: dataTypeString},
 			{Name: argTypeSortCriteria, DataType: dataTypeString},
 			{Name: argTypeIndex, DataType: dataTypeUI4},
 			{Name: argTypeCount, DataType: dataTypeUI4},
 			{Name: argTypeUpdateID, DataType: dataTypeUI4},
 			{Name: argTypeTransferID, DataType: dataTypeUI4},
-			{Name: argTypeTransferStatus, DataType: dataTypeString, AllowedValueList: &allowedValueList{allowedValues: []string{"COMPLETED", "ERROR", "IN_PROGRESS", "STOPPED"}}},
+			{Name: argTypeTransferStatus, DataType: dataTypeString, AllowedValueList: &allowedValueList{AllowedValues: []string{"COMPLETED", "ERROR", "IN_PROGRESS", "STOPPED"}}},
 			{Name: argTypeTransferLength, DataType: dataTypeString},
 			{Name: argTypeTransferTotal, DataType: dataTypeString},
 			{Name: argTypeTagValueList, DataType: dataTypeString},
@@ -307,5 +313,5 @@ func (b binary) MarshalText() (text []byte, err error) {
 }
 
 type allowedValueList struct {
-	allowedValues []string `xml:"allowedValue"`
+	AllowedValues []string `xml:"allowedValue"`
 }

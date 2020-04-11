@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
-	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -40,7 +39,6 @@ const (
 )
 
 type Server struct {
-	http.Server
 	ContentDirectory
 
 	UUID       uuid.UUID
@@ -49,7 +47,7 @@ type Server struct {
 	SearchAddr *net.UDPAddr
 }
 
-func NewServer(i *net.Interface, httpPort, searchPort int, interval time.Duration) (*Server, error) {
+func NewServer(i *net.Interface, httpPort, searchPort int, interval time.Duration, path string) (*Server, error) {
 	a, err := localAddress(i)
 	if err != nil {
 		return nil, err
@@ -61,8 +59,11 @@ func NewServer(i *net.Interface, httpPort, searchPort int, interval time.Duratio
 	}
 
 	s := Server{
-		Server: http.Server{
-			Addr: fmt.Sprintf("%s:%d", a, httpPort),
+		ContentDirectory: ContentDirectory{
+			Server: http.Server{
+				Addr: fmt.Sprintf("%s:%d", a, httpPort),
+			},
+			Path: path,
 		},
 		UUID:       uuid.NewV4(),
 		Interface:  i,
@@ -74,22 +75,19 @@ func NewServer(i *net.Interface, httpPort, searchPort int, interval time.Duratio
 	mux.HandleFunc("/service", Describe(&s.ContentDirectory))
 	mux.HandleFunc("/control", s.Control)
 	mux.HandleFunc("/event", s.Event)
+	mux.Handle("/media/", http.StripPrefix("/media/", http.FileServer(http.Dir(s.Path))))
 	s.Handler = requestLog(mux)
 
 	return &s, nil
 }
 
-func (s *Server) URL(p ...string) *url.URL {
-	return &url.URL{
-		Scheme: "http",
-		Host:   s.Addr,
-		Path:   path.Join(p...),
-	}
-}
-
 func (s *Server) Advertise(done <-chan struct{}) error {
-	log.Printf("start advertising")
-	defer log.Printf("end advertising")
+	fs := log.Fields{
+		"uuid": s.UUID,
+		"at":   multicastAddress,
+	}
+	log.WithFields(fs).Info("start advertising")
+	defer log.WithFields(fs).Info("end advertising")
 
 	c, err := net.Dial("udp", multicastAddress)
 	if err != nil {
@@ -420,13 +418,27 @@ func Describe(d describer) func(http.ResponseWriter, *http.Request) {
 func requestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t := time.Now()
-		next.ServeHTTP(w, r)
+		rw := responseWriter{
+			ResponseWriter: w,
+			statusCode:     http.StatusOK,
+		}
+		next.ServeHTTP(&rw, r)
 		log.WithFields(log.Fields{
 			"addr":    r.RemoteAddr,
 			"method":  r.Method,
-			"url":     r.URL,
 			"elapsed": time.Since(t).Milliseconds(),
 			"ua":      r.Header.Get("User-Agent"),
-		}).Info("access")
+			"status":  rw.statusCode,
+		}).Info(r.URL.String())
 	})
+}
+
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (r *responseWriter) WriteHeader(statusCode int) {
+	r.statusCode = statusCode
+	r.ResponseWriter.WriteHeader(statusCode)
 }
