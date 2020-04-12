@@ -8,7 +8,6 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/sirupsen/logrus"
 
@@ -36,7 +35,7 @@ func main() {
 		panic(err)
 	}
 
-	s, err := picoms.NewServer(i, 8200, 1900, 3*time.Second, flag.Args()[0])
+	s, err := picoms.NewServer(i, flag.Args()[0])
 	if err != nil {
 		panic(err)
 	}

@@ -21,7 +21,7 @@ import (
 
 var (
 	osProductToken     = "unknown/0.0"
-	upnpProductToken   = "UPnP/2.0"
+	upnpProductToken   = "UPnP/1.0"
 	serverProductToken = "picoms/0.0"
 )
 
@@ -38,6 +38,12 @@ const (
 	MethodMSearch = "M-SEARCH"
 )
 
+const (
+	defaultHTTPPort   = 8200
+	defaultSearchPort = 1900
+	defaultInterval   = 3 * time.Second
+)
+
 type Server struct {
 	ContentDirectory
 
@@ -47,13 +53,13 @@ type Server struct {
 	SearchAddr *net.UDPAddr
 }
 
-func NewServer(i *net.Interface, httpPort, searchPort int, interval time.Duration, path string) (*Server, error) {
+func NewServer(i *net.Interface, path string) (*Server, error) {
 	a, err := localAddress(i)
 	if err != nil {
 		return nil, err
 	}
 
-	sa, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", a, searchPort))
+	sa, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", a, defaultSearchPort))
 	if err != nil {
 		return nil, err
 	}
@@ -61,13 +67,13 @@ func NewServer(i *net.Interface, httpPort, searchPort int, interval time.Duratio
 	s := Server{
 		ContentDirectory: ContentDirectory{
 			Server: http.Server{
-				Addr: fmt.Sprintf("%s:%d", a, httpPort),
+				Addr: fmt.Sprintf("%s:%d", a, defaultHTTPPort),
 			},
 			Path: path,
 		},
 		UUID:       uuid.NewV4(),
 		Interface:  i,
-		Interval:   interval,
+		Interval:   defaultInterval,
 		SearchAddr: sa,
 	}
 	mux := http.NewServeMux()
@@ -75,8 +81,8 @@ func NewServer(i *net.Interface, httpPort, searchPort int, interval time.Duratio
 	mux.HandleFunc("/service", Describe(&s.ContentDirectory))
 	mux.HandleFunc("/control", s.Control)
 	mux.HandleFunc("/event", s.Event)
-	mux.Handle("/media/", http.StripPrefix("/media/", http.FileServer(http.Dir(s.Path))))
-	s.Handler = requestLog(mux)
+	mux.Handle("/media/", requestLog(http.StripPrefix("/media/", http.FileServer(http.Dir(s.Path)))))
+	s.Handler = mux
 
 	return &s, nil
 }
@@ -84,7 +90,7 @@ func NewServer(i *net.Interface, httpPort, searchPort int, interval time.Duratio
 func (s *Server) Advertise(done <-chan struct{}) error {
 	fs := log.Fields{
 		"uuid": s.UUID,
-		"at":   multicastAddress,
+		"addr": multicastAddress,
 	}
 	log.WithFields(fs).Info("start advertising")
 	defer log.WithFields(fs).Info("end advertising")
@@ -121,7 +127,7 @@ func (s *Server) Advertise(done <-chan struct{}) error {
 		select {
 		case <-done:
 			return nil
-		case <-time.Tick(s.Interval):
+		case <-time.After(s.Interval):
 			if err := s.notifyAlive(c, "upnp:rootdevice", fmt.Sprintf("uuid:%s::upnp:rootdevice", s.UUID)); err != nil {
 				return err
 			}
@@ -240,12 +246,15 @@ func localAddress(i *net.Interface) (string, error) {
 }
 
 func (s *Server) ReplySearch(done <-chan struct{}) error {
-	log.Printf("start replying")
-	defer log.Printf("end replying")
+	fs := log.Fields{
+		"addr": s.Addr,
+	}
+	log.WithFields(fs).Info("start replying")
+	defer log.WithFields(fs).Info("end replying")
 
-	addr, err := net.ResolveUDPAddr("udp", "239.255.255.250:1900")
+	addr, err := net.ResolveUDPAddr("udp", multicastAddress)
 	if err != nil {
-		return err
+		return fmt.Errorf("net.ResolveUDPAddr() failed: %w", err)
 	}
 
 	reqs := make(chan *http.Request)
@@ -253,7 +262,7 @@ func (s *Server) ReplySearch(done <-chan struct{}) error {
 
 	multi, err := net.ListenMulticastUDP("udp", s.Interface, addr)
 	if err != nil {
-		return err
+		return fmt.Errorf("net.ListenMulticastUDP() failed: %w", err)
 	}
 	defer multi.Close()
 
@@ -279,7 +288,7 @@ func (s *Server) ReplySearch(done <-chan struct{}) error {
 		s.SearchAddr.Port = 0
 		uni, err = net.ListenUDP("udp", s.SearchAddr)
 		if err != nil {
-			return err
+			return fmt.Errorf("net.ListenUDP() failed: %w", err)
 		}
 		s.SearchAddr = uni.LocalAddr().(*net.UDPAddr)
 	}
@@ -381,7 +390,7 @@ func (s *Server) respond(r *http.Request, st, usn string) error {
 
 	conn, err := net.Dial("udp", r.RemoteAddr)
 	if err != nil {
-		return err
+		return fmt.Errorf("net.Dial() failed: %w", err)
 	}
 	defer conn.Close()
 
@@ -397,7 +406,15 @@ func (s *Server) respond(r *http.Request, st, usn string) error {
 	if err := resp.Write(w); err != nil {
 		return err
 	}
-	return w.Flush()
+
+	// It's okay to fail because it's UDP!
+	if err := w.Flush(); err != nil {
+		log.WithFields(log.Fields{
+			"err": err,
+		}).Debug("flush failed")
+	}
+
+	return nil
 }
 
 type describer interface {
