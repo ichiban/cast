@@ -9,14 +9,18 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/ichiban/picoms/upnp"
+
 	"github.com/sirupsen/logrus"
 
 	"github.com/ichiban/picoms"
 )
 
 func main() {
+	var iface string
 	var verbose bool
 
+	flag.StringVar(&iface, "interface", "en0", "")
 	flag.BoolVar(&verbose, "verbose", false, "")
 	flag.Parse()
 
@@ -30,12 +34,19 @@ func main() {
 	done := make(chan struct{}, 1)
 	defer close(done)
 
-	i, err := net.InterfaceByName("en0")
+	i, err := net.InterfaceByName(iface)
 	if err != nil {
 		panic(err)
 	}
 
-	s, err := picoms.NewServer(i, flag.Args()[0])
+	s, err := upnp.NewServer(i, []upnp.Service{
+		{
+			Desc: &picoms.Description,
+			Impl: &picoms.ContentDirectory{
+				Path: flag.Args()[0],
+			},
+		},
+	})
 	if err != nil {
 		panic(err)
 	}

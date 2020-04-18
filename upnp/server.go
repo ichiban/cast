@@ -1,8 +1,9 @@
-package picoms
+package upnp
 
 import (
 	"bufio"
 	"bytes"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -45,15 +46,16 @@ const (
 )
 
 type Server struct {
-	ContentDirectory
+	http.Server
 
 	UUID       uuid.UUID
 	Interface  *net.Interface
 	Interval   time.Duration
 	SearchAddr *net.UDPAddr
+	Services   []Service
 }
 
-func NewServer(i *net.Interface, path string) (*Server, error) {
+func NewServer(i *net.Interface, services []Service) (*Server, error) {
 	a, err := localAddress(i)
 	if err != nil {
 		return nil, err
@@ -64,27 +66,115 @@ func NewServer(i *net.Interface, path string) (*Server, error) {
 		return nil, err
 	}
 
+	addr := fmt.Sprintf("%s:%d", a, defaultHTTPPort)
+
 	s := Server{
-		ContentDirectory: ContentDirectory{
-			Server: http.Server{
-				Addr: fmt.Sprintf("%s:%d", a, defaultHTTPPort),
-			},
-			Path: path,
+		Server: http.Server{
+			Addr: addr,
 		},
+
 		UUID:       uuid.NewV4(),
 		Interface:  i,
 		Interval:   defaultInterval,
 		SearchAddr: sa,
+		Services:   services,
 	}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", Describe(&s))
-	mux.HandleFunc("/service", Describe(&s.ContentDirectory))
-	mux.HandleFunc("/control", s.Control)
-	mux.HandleFunc("/event", s.Event)
-	mux.Handle("/media/", requestLog(http.StripPrefix("/media/", http.FileServer(http.Dir(s.Path)))))
+	mux.HandleFunc("/", s.Describe)
+	for i, s := range s.Services {
+		mux.HandleFunc(fmt.Sprintf("/%d/service", i), s.Describe)
+		mux.HandleFunc(fmt.Sprintf("/%d/control", i), s.Control)
+		mux.HandleFunc(fmt.Sprintf("/%d/event", i), s.Event)
+		mux.Handle(fmt.Sprintf("/%d/", i), http.StripPrefix(fmt.Sprintf("/%d", i), s.Impl))
+		s.Impl.SetBaseURL(&url.URL{
+			Scheme: "http",
+			Host:   addr,
+			Path:   fmt.Sprintf("/%d/", i),
+		})
+	}
 	s.Handler = mux
 
 	return &s, nil
+}
+
+func (s *Server) Describe(w http.ResponseWriter, r *http.Request) {
+	type service struct {
+		ServiceType string `xml:"serviceType"`
+		ServiceID   string `xml:"serviceId"`
+		SCPDURL     string `xml:"SCPDURL"`
+		ControlURL  string `xml:"controlURL"`
+		EventSubURL string `xml:"eventSubURL"`
+	}
+
+	type serviceList struct {
+		Services []service `xml:"service"`
+	}
+
+	type device struct {
+		DeviceType   string      `xml:"deviceType"`
+		FriendlyName string      `xml:"friendlyName"`
+		Manufacturer string      `xml:"manufacturer"`
+		ModelName    string      `xml:"modelName"`
+		UDN          string      `xml:"UDN"`
+		ServiceList  serviceList `xml:"serviceList"`
+	}
+
+	type deviceDescription = struct {
+		XMLName     xml.Name    `xml:"urn:schemas-upnp-org:device-1-0 root"`
+		ConfigID    int         `xml:"configId,attr"`
+		SpecVersion SpecVersion `xml:"specVersion"`
+		Device      device      `xml:"device"`
+	}
+
+	b, err := xml.MarshalIndent(deviceDescription{
+		ConfigID: 0,
+		SpecVersion: SpecVersion{
+			Major: 1,
+			Minor: 0,
+		},
+		Device: device{
+			DeviceType:   deviceType,
+			FriendlyName: "picoms",
+			Manufacturer: "ichiban",
+			ModelName:    serverProductToken,
+			UDN:          fmt.Sprintf("uuid:%s", s.UUID),
+			ServiceList: serviceList{
+				Services: []service{
+					{
+						ServiceType: serviceType,
+						ServiceID:   serviceID,
+						SCPDURL:     "/0/service",
+						ControlURL:  "/0/control",
+						EventSubURL: "/0/event",
+					},
+				},
+			},
+		},
+	}, "", "  ")
+	if err != nil {
+		log.WithFields(log.Fields{
+			"err": err,
+		}).Error("failed to marshal device description")
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
+	if _, err := w.Write([]byte(xmlDeclaration)); err != nil {
+		log.WithFields(log.Fields{
+			"err": err,
+		}).Error("failed to write xml declaration")
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	if _, err := w.Write(b); err != nil {
+		log.WithFields(log.Fields{
+			"err": err,
+		}).Error("failed to write device declaration")
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
 }
 
 func (s *Server) Advertise(done <-chan struct{}) error {
@@ -176,7 +266,7 @@ func (s *Server) notifyAlive(w io.Writer, nt, usn string) error {
 		ProtoMinor: 1,
 		Header: http.Header{
 			headerCacheControl:        []string{fmt.Sprintf("max-age = %d", s.Interval/time.Second)},
-			headerLocation:            []string{s.URL("/").String()},
+			headerLocation:            []string{s.url().String()},
 			headerNotificationType:    []string{nt},
 			headerNotificationSubType: []string{"ssdp:alive"},
 			headerServer:              []string{s.productTokens()},
@@ -378,7 +468,7 @@ func (s *Server) respond(r *http.Request, st, usn string) error {
 			headerCacheControl:      []string{fmt.Sprintf("max-age = %d", s.Interval/time.Second)},
 			headerDate:              []string{time.Now().Format(time.RFC1123)},
 			headerExt:               []string{""},
-			headerLocation:          []string{s.URL("/").String()},
+			headerLocation:          []string{s.url().String()},
 			headerServer:            []string{s.productTokens()},
 			headerSearchTarget:      []string{st},
 			headerUniqueServiceName: []string{usn},
@@ -417,45 +507,10 @@ func (s *Server) respond(r *http.Request, st, usn string) error {
 	return nil
 }
 
-type describer interface {
-	Describe() ([]byte, error)
-}
-
-func Describe(d describer) func(http.ResponseWriter, *http.Request) {
-	return func(w http.ResponseWriter, r *http.Request) {
-		b, err := d.Describe()
-		if err != nil {
-			panic(err)
-		}
-		w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
-		w.Write(b)
+func (s *Server) url() *url.URL {
+	return &url.URL{
+		Scheme: "http",
+		Host:   s.Addr,
+		Path:   "/",
 	}
-}
-
-func requestLog(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t := time.Now()
-		rw := responseWriter{
-			ResponseWriter: w,
-			statusCode:     http.StatusOK,
-		}
-		next.ServeHTTP(&rw, r)
-		log.WithFields(log.Fields{
-			"addr":    r.RemoteAddr,
-			"method":  r.Method,
-			"elapsed": time.Since(t).Milliseconds(),
-			"ua":      r.Header.Get("User-Agent"),
-			"status":  rw.statusCode,
-		}).Info(r.URL.String())
-	})
-}
-
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func (r *responseWriter) WriteHeader(statusCode int) {
-	r.statusCode = statusCode
-	r.ResponseWriter.WriteHeader(statusCode)
 }

@@ -1,6 +1,9 @@
 package picoms
 
-import "encoding/xml"
+import (
+	"bytes"
+	"encoding/xml"
+)
 
 type DIDLLite struct {
 	XMLName    xml.Name    `xml:"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/ DIDL-Lite"`
@@ -8,6 +11,18 @@ type DIDLLite struct {
 	XMLNSUPnP  string      `xml:"xmlns:upnp,attr"`
 	Containers []container `xml:"container"`
 	Items      []item      `xml:"item"`
+}
+
+func (d *DIDLLite) String() string {
+	b, err := xml.MarshalIndent(&d, "", "  ")
+	if err != nil {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := xml.EscapeText(&buf, b); err != nil {
+		return ""
+	}
+	return buf.String()
 }
 
 type container struct {

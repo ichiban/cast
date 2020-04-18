@@ -1,7 +1,6 @@
 package picoms
 
 import (
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -10,16 +9,12 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/ichiban/picoms/upnp"
 
 	log "github.com/sirupsen/logrus"
 )
-
-const (
-	soapEnvelope = "http://schemas.xmlsoap.org/soap/envelope/"
-	soapEncoding = "http://schemas.xmlsoap.org/soap/encoding"
-)
-
-const serviceContentDirectory1 = "urn:schemas-upnp-org:service:ContentDirectory:1"
 
 const (
 	browseMetaData       = "BrowseMetaData"
@@ -33,6 +28,135 @@ const (
 	classAudioItem     = "object.item.audioItem"
 	classVideoItem     = "object.item.videoItem"
 )
+
+const (
+	argTypeObjectID       = "A_ARG_TYPE_ObjectID"
+	argTypeResult         = "A_ARG_TYPE_Result"
+	argTypeSearchCriteria = "A_ARG_TYPE_SearchCriteria"
+	argTypeBrowseFlag     = "A_ARG_TYPE_BrowseFlag"
+	argTypeFilter         = "A_ARG_TYPE_Filter"
+	argTypeSortCriteria   = "A_ARG_TYPE_SortCriteria"
+	argTypeIndex          = "A_ARG_TYPE_Index"
+	argTypeCount          = "A_ARG_TYPE_Count"
+	argTypeUpdateID       = "A_ARG_TYPE_UpdateID"
+	argTypeTransferID     = "A_ARG_TYPE_TransferID"
+	argTypeTransferStatus = "A_ARG_TYPE_TransferStatus"
+	argTypeTransferLength = "A_ARG_TYPE_TransferLength"
+	argTypeTransferTotal  = "A_ARG_TYPE_TransferTotal"
+	argTypeTagValueList   = "A_ARG_TYPE_TagValueList"
+	argTypeURI            = "A_ARG_TYPE_URI"
+)
+
+const (
+	dataTypeString = "string"
+	dataTypeUI4    = "ui4"
+	dataTypeURI    = "uri"
+)
+
+var Description = upnp.ServiceDescription{
+	SpecVersion: upnp.SpecVersion{
+		Major: 1,
+		Minor: 0,
+	},
+	ActionList: upnp.ActionList{Actions: []upnp.Action{
+		{Name: "GetSearchCapabilities", ArgumentList: upnp.ArgumentList{Arguments: []upnp.Argument{
+			{Name: "SearchCaps", Direction: upnp.Out, RelatedStateVariable: "SearchCapabilities"},
+		}}},
+		{Name: "GetSortCapabilities", ArgumentList: upnp.ArgumentList{Arguments: []upnp.Argument{
+			{Name: "SortCaps", Direction: upnp.Out, RelatedStateVariable: "SortCapabilities"},
+		}}},
+		{Name: "GetSystemUpdateID", ArgumentList: upnp.ArgumentList{Arguments: []upnp.Argument{
+			{Name: "Id", Direction: upnp.Out, RelatedStateVariable: "SystemUpdateID"},
+		}}},
+		{Name: "Browse", ArgumentList: upnp.ArgumentList{Arguments: []upnp.Argument{
+			{Name: "ObjectID", Direction: upnp.In, RelatedStateVariable: argTypeObjectID},
+			{Name: "BrowseFlag", Direction: upnp.In, RelatedStateVariable: argTypeBrowseFlag},
+			{Name: "Filter", Direction: upnp.In, RelatedStateVariable: argTypeFilter},
+			{Name: "StartingIndex", Direction: upnp.In, RelatedStateVariable: argTypeIndex},
+			{Name: "RequestedCount", Direction: upnp.In, RelatedStateVariable: argTypeCount},
+			{Name: "SortCriteria", Direction: upnp.In, RelatedStateVariable: argTypeSortCriteria},
+			{Name: "Result", Direction: upnp.Out, RelatedStateVariable: argTypeResult},
+			{Name: "NumberReturned", Direction: upnp.Out, RelatedStateVariable: argTypeCount},
+			{Name: "TotalMatches", Direction: upnp.Out, RelatedStateVariable: argTypeCount},
+			{Name: "UpdateID", Direction: upnp.Out, RelatedStateVariable: argTypeUpdateID},
+		}}},
+		{Name: "Search", ArgumentList: upnp.ArgumentList{Arguments: []upnp.Argument{
+			{Name: "ContainerID", Direction: upnp.In, RelatedStateVariable: argTypeObjectID},
+			{Name: "SearchCriteria", Direction: upnp.In, RelatedStateVariable: argTypeSearchCriteria},
+			{Name: "Filter", Direction: upnp.In, RelatedStateVariable: argTypeFilter},
+			{Name: "StartingIndex", Direction: upnp.In, RelatedStateVariable: argTypeIndex},
+			{Name: "RequestedCount", Direction: upnp.In, RelatedStateVariable: argTypeCount},
+			{Name: "SortCriteria", Direction: upnp.In, RelatedStateVariable: argTypeSortCriteria},
+			{Name: "Result", Direction: upnp.Out, RelatedStateVariable: argTypeResult},
+			{Name: "NumberReturned", Direction: upnp.Out, RelatedStateVariable: argTypeCount},
+			{Name: "TotalMatches", Direction: upnp.Out, RelatedStateVariable: argTypeCount},
+			{Name: "UpdateID", Direction: upnp.Out, RelatedStateVariable: argTypeUpdateID},
+		}}},
+		{Name: "CreateObject", ArgumentList: upnp.ArgumentList{Arguments: []upnp.Argument{
+			{Name: "ContainerID", Direction: upnp.In, RelatedStateVariable: argTypeObjectID},
+			{Name: "Elements", Direction: upnp.In, RelatedStateVariable: argTypeResult},
+			{Name: "ObjectID", Direction: upnp.Out, RelatedStateVariable: argTypeObjectID},
+			{Name: "Result", Direction: upnp.Out, RelatedStateVariable: argTypeResult},
+		}}},
+		{Name: "DestroyObject", ArgumentList: upnp.ArgumentList{Arguments: []upnp.Argument{
+			{Name: "ObjectID", Direction: upnp.In, RelatedStateVariable: argTypeObjectID},
+		}}},
+		{Name: "UpdateObject", ArgumentList: upnp.ArgumentList{Arguments: []upnp.Argument{
+			{Name: "ObjectID", Direction: upnp.In, RelatedStateVariable: argTypeObjectID},
+			{Name: "CurrentTagValue", Direction: upnp.In, RelatedStateVariable: argTypeTagValueList},
+			{Name: "NewTagValue", Direction: upnp.In, RelatedStateVariable: argTypeTagValueList},
+		}}},
+		{Name: "ImportResource", ArgumentList: upnp.ArgumentList{Arguments: []upnp.Argument{
+			{Name: "SourceURI", Direction: upnp.In, RelatedStateVariable: argTypeURI},
+			{Name: "DestinationURI", Direction: upnp.In, RelatedStateVariable: argTypeURI},
+			{Name: "TransferID", Direction: upnp.Out, RelatedStateVariable: argTypeTransferID},
+		}}},
+		{Name: "ExportResource", ArgumentList: upnp.ArgumentList{Arguments: []upnp.Argument{
+			{Name: "SourceURI", Direction: upnp.In, RelatedStateVariable: argTypeURI},
+			{Name: "DestinationURI", Direction: upnp.In, RelatedStateVariable: argTypeURI},
+			{Name: "TransferID", Direction: upnp.Out, RelatedStateVariable: argTypeTransferID},
+		}}},
+		{Name: "StopTransferResource", ArgumentList: upnp.ArgumentList{Arguments: []upnp.Argument{
+			{Name: "TransferID", Direction: upnp.In, RelatedStateVariable: argTypeTransferID},
+		}}},
+		{Name: "GetTransferProgress", ArgumentList: upnp.ArgumentList{Arguments: []upnp.Argument{
+			{Name: "TransferID", Direction: upnp.In, RelatedStateVariable: argTypeTransferID},
+			{Name: "TransferStatus", Direction: upnp.Out, RelatedStateVariable: argTypeTransferStatus},
+			{Name: "TransferLength", Direction: upnp.Out, RelatedStateVariable: argTypeTransferLength},
+			{Name: "TransferTotal", Direction: upnp.Out, RelatedStateVariable: argTypeTransferTotal},
+		}}},
+		{Name: "DeleteResource", ArgumentList: upnp.ArgumentList{Arguments: []upnp.Argument{
+			{Name: "ResourceURI", Direction: upnp.In, RelatedStateVariable: argTypeURI},
+		}}},
+		{Name: "CreateReference", ArgumentList: upnp.ArgumentList{Arguments: []upnp.Argument{
+			{Name: "ContainerID", Direction: upnp.In, RelatedStateVariable: argTypeObjectID},
+			{Name: "ObjectID", Direction: upnp.In, RelatedStateVariable: argTypeObjectID},
+			{Name: "NewID", Direction: upnp.Out, RelatedStateVariable: argTypeObjectID},
+		}}},
+	}},
+	ServiceStateTable: upnp.StateVariableList{StateVariables: []upnp.StateVariable{
+		{Name: "TransferIDs", DataType: dataTypeString, SendEvents: true},
+		{Name: argTypeObjectID, DataType: dataTypeString},
+		{Name: argTypeResult, DataType: dataTypeString},
+		{Name: argTypeSearchCriteria, DataType: dataTypeString},
+		{Name: argTypeBrowseFlag, DataType: dataTypeString, AllowedValueList: &upnp.AllowedValueList{AllowedValues: []string{browseMetaData, browseDirectChildren}}},
+		{Name: argTypeFilter, DataType: dataTypeString},
+		{Name: argTypeSortCriteria, DataType: dataTypeString},
+		{Name: argTypeIndex, DataType: dataTypeUI4},
+		{Name: argTypeCount, DataType: dataTypeUI4},
+		{Name: argTypeUpdateID, DataType: dataTypeUI4},
+		{Name: argTypeTransferID, DataType: dataTypeUI4},
+		{Name: argTypeTransferStatus, DataType: dataTypeString, AllowedValueList: &upnp.AllowedValueList{AllowedValues: []string{"COMPLETED", "ERROR", "IN_PROGRESS", "STOPPED"}}},
+		{Name: argTypeTransferLength, DataType: dataTypeString},
+		{Name: argTypeTransferTotal, DataType: dataTypeString},
+		{Name: argTypeTagValueList, DataType: dataTypeString},
+		{Name: argTypeURI, DataType: dataTypeURI},
+		{Name: "SearchCapabilities", DataType: dataTypeString},
+		{Name: "SortCapabilities", DataType: dataTypeString},
+		{Name: "SystemUpdateID", DataType: dataTypeUI4, SendEvents: true},
+		{Name: "ContainerUpdateIDs", DataType: dataTypeString, SendEvents: true},
+	}},
+}
 
 var formats = []struct {
 	ext   string
@@ -58,17 +182,37 @@ var formats = []struct {
 }
 
 type ContentDirectory struct {
-	http.Server
+	BaseURL *url.URL
+	Path    string
 
-	Path string
+	TransferIDs               string
+	A_ARG_TYPE_ObjectID       string
+	A_ARG_TYPE_Result         string
+	A_ARG_TYPE_SearchCriteria string
+	A_ARG_TYPE_BrowseFlag     string
+	A_ARG_TYPE_Filter         string
+	A_ARG_TYPE_SortCriteria   string
+	A_ARG_TYPE_Index          uint32
+	A_ARG_TYPE_Count          uint32
+	A_ARG_TYPE_UpdateID       uint32
+	A_ARG_TYPE_TransferID     uint32
+	A_ARG_TYPE_TransferStatus string
+	A_ARG_TYPE_TransferLength string
+	A_ARG_TYPE_TransferTotal  string
+	A_ARG_TYPE_TagValueList   string
+	A_ARG_TYPE_URI            url.URL
+	SearchCapabilities        string
+	SortCapabilities          string
+	SystemUpdateID            uint32
+	ContainerUpdateIDs        string
 }
 
-func (c *ContentDirectory) URL(p ...string) *url.URL {
-	return &url.URL{
-		Scheme: "http",
-		Host:   c.Addr,
-		Path:   path.Join(p...),
-	}
+func (c *ContentDirectory) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	requestLog(http.StripPrefix("/media", http.FileServer(http.Dir(c.Path)))).ServeHTTP(w, r)
+}
+
+func (c *ContentDirectory) SetBaseURL(url *url.URL) {
+	c.BaseURL = url
 }
 
 func (c *ContentDirectory) Browse(objectID, browseFlag, filter string, startingIndex, requestedCount uint32, sortCriteria string) (*DIDLLite, uint32, uint32, uint32, error) {
@@ -131,7 +275,7 @@ func (c *ContentDirectory) Browse(objectID, browseFlag, filter string, startingI
 				Class:      class,
 				Res: res{
 					ProtocolInfo: fmt.Sprintf("http-get:*:%s:*", mime),
-					URL:          c.URL("media", p).String(),
+					URL:          c.url("media", p).String(),
 				},
 			})
 		}
@@ -139,305 +283,36 @@ func (c *ContentDirectory) Browse(objectID, browseFlag, filter string, startingI
 	return &d, uint32(len(fis)), uint32(len(fis)), 0, nil
 }
 
-func (c *ContentDirectory) Control(w http.ResponseWriter, r *http.Request) {
-	b, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		panic(err)
-	}
-	r.Body.Close()
-
-	var req request
-	if err := xml.Unmarshal(b, &req); err != nil {
-		panic(err)
-	}
-	resp, err := c.handle(&req)
-	if err != nil {
-		panic(err)
-	}
-	b, err = xml.MarshalIndent(&resp, "", "  ")
-	if err != nil {
-		panic(err)
-	}
-	if _, err := w.Write([]byte(xmlDeclaration)); err != nil {
-		panic(err)
-	}
-	if _, err := w.Write(b); err != nil {
-		panic(err)
-	}
+func (c *ContentDirectory) url(p ...string) *url.URL {
+	url := *c.BaseURL
+	url.Path = path.Join(append([]string{url.Path}, p...)...)
+	return &url
 }
 
-func (c *ContentDirectory) handle(r *request) (*response, error) {
-	switch {
-	case r.Body.GetSearchCapabilities != nil:
-		log.WithFields(log.Fields{}).Info("GetSearchCapabilities")
-		return nil, nil
-	case r.Body.GetSortCapabilities != nil:
-		log.WithFields(log.Fields{}).Info("GetSortCapabilities")
-		return &response{
-			XMLNS:         soapEnvelope,
-			EncodingStyle: soapEncoding,
-			Body: responseBody{
-				GetSortCapabilitiesResponse: &getSortCapabilitiesResponse{
-					SortCaps: "",
-				},
-			},
-		}, nil
-	case r.Body.GetSystemUpdateID != nil:
-		log.Info("GetSystemUpdateID")
-		return nil, nil
-	case r.Body.Browse != nil:
-		d, numberReturned, totalMatches, updateID, err := c.Browse(r.Body.Browse.ObjectID, r.Body.Browse.BrowseFlag, r.Body.Browse.Filter, r.Body.Browse.StartingIndex, r.Body.Browse.RequestedCount, r.Body.Browse.SortCriteria)
-
-		b, err := xml.MarshalIndent(&d, "", "  ")
-		if err != nil {
-			return nil, err
+func requestLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t := time.Now()
+		rw := responseWriter{
+			ResponseWriter: w,
+			statusCode:     http.StatusOK,
 		}
-
+		next.ServeHTTP(&rw, r)
 		log.WithFields(log.Fields{
-			"ObjectID":       r.Body.Browse.ObjectID,
-			"BrowseFlag":     r.Body.Browse.BrowseFlag,
-			"Filter":         r.Body.Browse.Filter,
-			"StartingIndex":  r.Body.Browse.StartingIndex,
-			"RequestedCount": r.Body.Browse.RequestedCount,
-			"SortCriteria":   r.Body.Browse.SortCriteria,
-			"NumberReturned": numberReturned,
-			"TotalMatches":   totalMatches,
-			"UpdateID":       updateID,
-		}).Info("Browse")
-
-		return &response{
-			XMLNS:         soapEnvelope,
-			EncodingStyle: soapEncoding,
-			Body: responseBody{
-				BrowseResponse: &browseResponse{
-					XMLNS:          serviceContentDirectory1,
-					Result:         string(b),
-					NumberReturned: numberReturned,
-					TotalMatches:   totalMatches,
-					UpdateID:       updateID,
-				},
-			},
-		}, nil
-	case r.Body.Search != nil:
-		log.Info("Search")
-		return nil, nil
-	case r.Body.CreateObject != nil:
-		log.Info("CreateObject")
-		return nil, nil
-	case r.Body.DestroyObject != nil:
-		log.Info("DestroyObject")
-		return nil, nil
-	case r.Body.UpdateObject != nil:
-		log.Info("UpdateObject")
-		return nil, nil
-	case r.Body.ImportResource != nil:
-		log.Info("ImportResource")
-		return nil, nil
-	case r.Body.ExportResource != nil:
-		log.Info("ExportResource")
-		return nil, nil
-	case r.Body.StopTransferResource != nil:
-		log.Info("StopTransferResource")
-		return nil, nil
-	case r.Body.GetTransferProgress != nil:
-		log.Info("GetTransferProgress")
-		return nil, nil
-	case r.Body.DeleteResource != nil:
-		log.Info("DeleteResource")
-		return nil, nil
-	case r.Body.CreateReference != nil:
-		log.Info("CreateReference")
-		return nil, nil
-	default:
-		return nil, nil
-	}
+			"addr":    r.RemoteAddr,
+			"method":  r.Method,
+			"elapsed": time.Since(t).Milliseconds(),
+			"ua":      r.Header.Get("User-Agent"),
+			"status":  rw.statusCode,
+		}).Info(r.URL.String())
+	})
 }
 
-func (c *ContentDirectory) Event(w http.ResponseWriter, r *http.Request) {
-	log.WithFields(log.Fields{
-		"method": r.Method,
-		"url":    r.URL,
-		"ua":     r.Header.Get("USER-AGENT"),
-		"cb":     r.Header.Get("CALLBACK"),
-		"to":     r.Header.Get("TIMEOUT"),
-		"addr":   r.RemoteAddr,
-	}).Info("Event")
-	w.WriteHeader(http.StatusNotImplemented)
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
 }
 
-type request struct {
-	XMLName xml.Name `xml:"Envelope"`
-	Body    requestBody
-}
-
-type response struct {
-	XMLName       xml.Name     `xml:"s:Envelope"`
-	XMLNS         string       `xml:"xmlns:s,attr"`
-	EncodingStyle string       `xml:"s:encodingStyle,attr"`
-	Body          responseBody `xml:"s:Body"`
-}
-
-type requestBody struct {
-	GetSearchCapabilities *getSearchCapabilities
-	GetSortCapabilities   *getSortCapabilities
-	GetSystemUpdateID     *getSystemUpdateID
-	Browse                *browse
-	Search                *search
-	CreateObject          *createObject
-	DestroyObject         *destroyObject
-	UpdateObject          *updateObject
-	ImportResource        *importResource
-	ExportResource        *exportResource
-	StopTransferResource  *stopTransferResource
-	GetTransferProgress   *getTransferProgress
-	DeleteResource        *deleteResource
-	CreateReference       *createReference
-}
-
-type responseBody struct {
-	GetSearchCapabilitiesResponse *getSearchCapabilitiesResponse `xml:"u:GetSearchCapabilitiesResponse,omitempty"`
-	GetSortCapabilitiesResponse   *getSortCapabilitiesResponse   `xml:"u:GetSortCapabilitiesResponse,omitempty"`
-	GetSystemUpdateIDResponse     *getSystemUpdateIDResponse     `xml:"u:GetSystemUpdateIDResponse,omitempty"`
-	BrowseResponse                *browseResponse                `xml:"u:BrowseResponse,omitempty"`
-	SearchResponse                *searchResponse                `xml:"u:SearchResponse,omitempty"`
-	CreateObjectResponse          *createObjectResponse          `xml:"u:CreateObjectResponse,omitempty"`
-	DestroyObjectResponse         *destroyObjectResponse         `xml:"u:DestroyObjectResponse,omitempty"`
-	UpdateObjectResponse          *updateObjectResponse          `xml:"u:UpdateObjectResponse,omitempty"`
-	ImportResourceResponse        *importResourceResponse        `xml:"u:ImportResourceResponse,omitempty"`
-	ExportResourceResponse        *exportResourceResponse        `xml:"u:ExportResourceResponse,omitempty"`
-	StopTransferResourceResponse  *stopTransferResourceResponse  `xml:"u:StopTransferResourceResponse,omitempty"`
-	GetTransferProgressResponse   *getTransferProgressResponse   `xml:"u:GetTransferProgressResponse,omitempty"`
-	DeleteResourceResponse        *deleteResourceResponse        `xml:"u:DeleteResourceResponse,omitempty"`
-	CreateReferenceResponse       *createReferenceResponse       `xml:"u:CreateReferenceResponse,omitempty"`
-}
-
-type getSearchCapabilities struct {
-}
-
-type getSearchCapabilitiesResponse struct {
-	SearchCaps string
-}
-
-type getSortCapabilities struct {
-}
-
-type getSortCapabilitiesResponse struct {
-	SortCaps string
-}
-
-type getSystemUpdateID struct {
-}
-
-type getSystemUpdateIDResponse struct {
-	Id uint32
-}
-
-type browse struct {
-	ObjectID       string
-	BrowseFlag     string
-	Filter         string
-	StartingIndex  uint32
-	RequestedCount uint32
-	SortCriteria   string
-}
-
-type browseResponse struct {
-	XMLNS          string `xml:"xmlns:u,attr"`
-	Result         string
-	NumberReturned uint32
-	TotalMatches   uint32
-	UpdateID       uint32
-}
-
-type search struct {
-	ContainerID    string
-	SearchCriteria string
-	Filter         string
-	StartingIndex  uint32
-	RequestedCount uint32
-	SortCriteria   string
-}
-
-type searchResponse struct {
-	Result         string
-	NumberReturned uint32
-	TotalMatches   uint32
-	UpdateID       uint32
-}
-
-type createObject struct {
-	ContainerID string
-	Elements    string
-}
-
-type createObjectResponse struct {
-	ObjectID string
-	Result   string
-}
-
-type destroyObject struct {
-	ObjectID string
-}
-
-type destroyObjectResponse struct {
-}
-
-type updateObject struct {
-	ObjectID        string
-	CurrentTagValue string
-	NewTagValue     string
-}
-
-type updateObjectResponse struct {
-}
-
-type importResource struct {
-	SourceURI      url.URL
-	DestinationURI url.URL
-}
-
-type importResourceResponse struct {
-	TransferID string
-}
-
-type exportResource struct {
-	SourceURI      url.URL
-	DestinationURI url.URL
-}
-
-type exportResourceResponse struct {
-	TransferID string
-}
-
-type stopTransferResource struct {
-	TransferID int
-}
-
-type stopTransferResourceResponse struct {
-}
-
-type getTransferProgress struct {
-	TransferID int
-}
-
-type getTransferProgressResponse struct {
-	TransferStatus string
-	TransferLength string
-	TransferTotal  string
-}
-
-type deleteResource struct {
-	ResourceURI url.URL
-}
-
-type deleteResourceResponse struct {
-}
-
-type createReference struct {
-	ContainerID string
-	ObjectID    string
-}
-
-type createReferenceResponse struct {
-	NewID string
+func (r *responseWriter) WriteHeader(statusCode int) {
+	r.statusCode = statusCode
+	r.ResponseWriter.WriteHeader(statusCode)
 }
