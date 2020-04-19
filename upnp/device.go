@@ -23,7 +23,7 @@ import (
 var (
 	osProductToken     = "unknown/0.0"
 	upnpProductToken   = "UPnP/1.0"
-	serverProductToken = "picoms/0.0"
+	serverProductToken = "cast/0.0"
 )
 
 const (
@@ -53,15 +53,16 @@ const (
 type Device struct {
 	http.Server
 
-	UUID       uuid.UUID
-	Type       string
-	Interface  *net.Interface
-	Interval   time.Duration
-	SearchAddr *net.UDPAddr
-	Services   []Service
+	UUID         uuid.UUID
+	Type         string
+	FriendlyName string
+	Interface    *net.Interface
+	Interval     time.Duration
+	SearchAddr   *net.UDPAddr
+	Services     []Service
 }
 
-func NewDevice(i *net.Interface, deviceType string, services []Service) (*Device, error) {
+func NewDevice(i *net.Interface, deviceType, friendlyName string, services []Service) (*Device, error) {
 	a, err := localAddress(i)
 	if err != nil {
 		return nil, err
@@ -74,22 +75,23 @@ func NewDevice(i *net.Interface, deviceType string, services []Service) (*Device
 
 	addr := fmt.Sprintf("%s:%d", a, defaultHTTPPort)
 
-	s := Device{
+	d := Device{
 		Server: http.Server{
 			Addr: addr,
 		},
 
-		UUID:       uuid.NewV4(),
-		Type:       deviceType,
-		Interface:  i,
-		Interval:   defaultInterval,
-		SearchAddr: sa,
-		Services:   services,
+		UUID:         uuid.NewV4(),
+		Type:         deviceType,
+		FriendlyName: friendlyName,
+		Interface:    i,
+		Interval:     defaultInterval,
+		SearchAddr:   sa,
+		Services:     services,
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.Describe)
-	for i, s := range s.Services {
+	mux.HandleFunc("/", d.Describe)
+	for i, s := range d.Services {
 		mux.HandleFunc(fmt.Sprintf("/%d/service", i), s.Describe)
 		mux.HandleFunc(fmt.Sprintf("/%d/control", i), s.Control)
 		mux.HandleFunc(fmt.Sprintf("/%d/event", i), s.Event)
@@ -100,9 +102,9 @@ func NewDevice(i *net.Interface, deviceType string, services []Service) (*Device
 			Path:   fmt.Sprintf("/%d/", i),
 		})
 	}
-	s.Handler = mux
+	d.Handler = mux
 
-	return &s, nil
+	return &d, nil
 }
 
 func (d *Device) Describe(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +144,7 @@ func (d *Device) Describe(w http.ResponseWriter, r *http.Request) {
 		},
 		Device: device{
 			DeviceType:   d.Type,
-			FriendlyName: "picoms",
+			FriendlyName: d.FriendlyName,
 			Manufacturer: "ichiban",
 			ModelName:    serverProductToken,
 			UDN:          fmt.Sprintf("uuid:%s", d.UUID),

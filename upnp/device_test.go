@@ -21,12 +21,12 @@ func TestNewDevice(t *testing.T) {
 	assert.NoError(t, err)
 
 	t.Run("nil interface", func(t *testing.T) {
-		_, err := NewDevice(nil, "foo", nil)
+		_, err := NewDevice(nil, "foo", "Cast", nil)
 		assert.Error(t, err)
 	})
 
 	t.Run("empty services", func(t *testing.T) {
-		d, err := NewDevice(i, "foo", nil)
+		d, err := NewDevice(i, "foo", "Cast", nil)
 		assert.NoError(t, err)
 		assert.NotNil(t, d)
 	})
@@ -44,7 +44,7 @@ func TestNewDevice(t *testing.T) {
 		si3.On("SetBaseURL", mock.Anything).Return().Once()
 		defer si3.AssertExpectations(t)
 
-		d, err := NewDevice(i, "foo", []Service{
+		d, err := NewDevice(i, "foo", "Cast", []Service{
 			{
 				Impl: &si1,
 			},
@@ -63,7 +63,8 @@ func TestNewDevice(t *testing.T) {
 
 func TestDevice_Describe(t *testing.T) {
 	d := Device{
-		Type: "foo",
+		Type:         "foo",
+		FriendlyName: "Cast",
 		Services: []Service{
 			{
 				Type: "serviceType1",
@@ -92,9 +93,9 @@ func TestDevice_Describe(t *testing.T) {
   </specVersion>
   <device>
     <deviceType>foo</deviceType>
-    <friendlyName>picoms</friendlyName>
+    <friendlyName>Cast</friendlyName>
     <manufacturer>ichiban</manufacturer>
-    <modelName>picoms/0.0</modelName>
+    <modelName>cast/0.0</modelName>
     <UDN>uuid:00000000-0000-0000-0000-000000000000</UDN>
     <serviceList>
       <service>

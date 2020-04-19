@@ -2,25 +2,26 @@ package main
 
 import (
 	"context"
-	"flag"
 	"net"
 	"os"
 	"os/signal"
 	"sync"
 
-	"github.com/ichiban/picoms/upnp"
-
 	"github.com/sirupsen/logrus"
+	flag "github.com/spf13/pflag"
 
-	"github.com/ichiban/picoms"
+	"github.com/ichiban/cast"
+	"github.com/ichiban/cast/upnp"
 )
 
 func main() {
 	var iface string
+	var name string
 	var verbose bool
 
-	flag.StringVar(&iface, "interface", "en0", "")
-	flag.BoolVar(&verbose, "verbose", false, "")
+	flag.StringVarP(&iface, "interface", "i", "en0", "network interface")
+	flag.StringVarP(&name, "name", "n", "Cast", "friendly name that appears on your player device")
+	flag.BoolVarP(&verbose, "verbose", "v", false, "shows more logs")
 	flag.Parse()
 
 	if verbose {
@@ -38,12 +39,12 @@ func main() {
 		panic(err)
 	}
 
-	s, err := upnp.NewDevice(i, "urn:schemas-upnp-org:device:MediaServer:1", []upnp.Service{
+	s, err := upnp.NewDevice(i, "urn:schemas-upnp-org:device:MediaServer:1", name, []upnp.Service{
 		{
 			ID:   "urn:upnp-org:serviceId:ContentDirectory",
 			Type: "urn:schemas-upnp-org:service:ContentDirectory:1",
-			Desc: &picoms.Description,
-			Impl: &picoms.ContentDirectory{
+			Desc: &cast.Description,
+			Impl: &cast.ContentDirectory{
 				Path: flag.Args()[0],
 			},
 		},

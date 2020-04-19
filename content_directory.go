@@ -1,4 +1,4 @@
-package picoms
+package cast
 
 import (
 	"errors"
@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ichiban/picoms/upnp"
-
 	log "github.com/sirupsen/logrus"
+
+	"github.com/ichiban/cast/upnp"
 )
 
 const (
