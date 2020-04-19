@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"sync"
-	"syscall"
 
 	"github.com/ichiban/picoms/upnp"
 
@@ -29,7 +28,7 @@ func main() {
 	}
 
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sig, os.Interrupt)
 
 	done := make(chan struct{}, 1)
 	defer close(done)
