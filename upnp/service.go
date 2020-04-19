@@ -14,14 +14,14 @@ import (
 )
 
 const (
-	deviceType  = "urn:schemas-upnp-org:device:MediaServer:1"
-	serviceType = "urn:schemas-upnp-org:service:ContentDirectory:1"
-	serviceID   = "urn:upnp-org:serviceId:ContentDirectory"
+	deviceType = "urn:schemas-upnp-org:device:MediaServer:1"
 )
 
 const xmlDeclaration = "<?xml version=\"1.0\"?>\n"
 
 type Service struct {
+	ID   string
+	Type string
 	Desc *ServiceDescription
 	Impl ServiceImplementation
 }
@@ -58,34 +58,34 @@ func (s *Service) Describe(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type argument struct {
+	XMLName xml.Name
+	Value   string `xml:",innerxml"`
+}
+
+type action struct {
+	XMLName   xml.Name
+	XMLNSU    string     `xml:"xmlns:u,attr"`
+	Arguments []argument `xml:",any"`
+}
+
+type body struct {
+	Action action `xml:",any"`
+}
+
+type requestEnvelope struct {
+	XMLName xml.Name `xml:"Envelope"`
+	Body    body
+}
+
+type responseEnvelope struct {
+	XMLName       xml.Name `xml:"s:Envelope"`
+	XMLNSS        string   `xml:"xmlns:s,attr"`
+	EncodingStyle string   `xml:"s:encodingStyle,attr"`
+	ResponseBody  body     `xml:"s:Body"`
+}
+
 func (s *Service) Control(w http.ResponseWriter, r *http.Request) {
-	type argument struct {
-		XMLName xml.Name
-		Value   string `xml:",innerxml"`
-	}
-
-	type action struct {
-		XMLName   xml.Name
-		XMLNSU    string     `xml:"xmlns:u,attr"`
-		Arguments []argument `xml:",any"`
-	}
-
-	type body struct {
-		Action action `xml:",any"`
-	}
-
-	type requestEnvelope struct {
-		XMLName xml.Name `xml:"Envelope"`
-		Body    body
-	}
-
-	type responseEnvelope struct {
-		XMLName       xml.Name `xml:"s:Envelope"`
-		XMLNSS        string   `xml:"xmlns:s,attr"`
-		EncodingStyle string   `xml:"s:encodingStyle,attr"`
-		ResponseBody  body     `xml:"s:Body"`
-	}
-
 	b, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -105,77 +105,16 @@ func (s *Service) Control(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	v := reflect.ValueOf(s.Impl)
-
-	name := req.Body.Action.XMLName.Local
-	a := s.Desc.ActionByName(name)
-
-	var in []reflect.Value
-	for _, arg := range req.Body.Action.Arguments {
-		t := v.Elem().FieldByName(a.ArgumentByName(arg.XMLName.Local).RelatedStateVariable).Type()
-		switch t.Kind() {
-		case reflect.String:
-			in = append(in, reflect.ValueOf(arg.Value))
-		case reflect.Uint32:
-			n, err := strconv.ParseUint(arg.Value, 10, 32)
-			if err != nil {
-				log.WithFields(log.Fields{
-					"err": err,
-				}).Error("failed to parse uint32")
-				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-				return
-			}
-			in = append(in, reflect.ValueOf(uint32(n)))
-		default:
-			log.WithFields(log.Fields{
-				"err": err,
-			}).Error("unknown argument type")
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			return
-		}
+	resp, err := s.call(&req)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"err": err,
+		}).Error("failed to call method")
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
 	}
 
-	m := v.MethodByName(name)
-	out := m.Call(in)
-
-	last := out[len(out)-1]
-	if last.Type() == reflect.TypeOf((*error)(nil)).Elem() {
-		out = out[:len(out)-1]
-		if err, ok := last.Interface().(error); ok {
-			// TODO: return soap error
-			log.WithFields(log.Fields{
-				"name": name,
-				"err":  err,
-			}).Error("method failed")
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			return
-		}
-	}
-
-	resp := responseEnvelope{
-		XMLNSS:        "http://schemas.xmlsoap.org/soap/envelope/",
-		EncodingStyle: "http://schemas.xmlsoap.org/soap/encoding/",
-		ResponseBody: body{
-			Action: action{
-				XMLName: xml.Name{
-					Local: "u:" + name + "Response",
-				},
-				XMLNSU: serviceType,
-			},
-		},
-	}
-
-	for i, o := range out {
-		arg := a.OutArgumentByIndex(i)
-		resp.ResponseBody.Action.Arguments = append(resp.ResponseBody.Action.Arguments, argument{
-			XMLName: xml.Name{
-				Local: arg.Name,
-			},
-			Value: fmt.Sprint(o.Interface()),
-		})
-	}
-
-	b, err = xml.MarshalIndent(&resp, "", "  ")
+	b, err = xml.MarshalIndent(resp, "", "  ")
 	if err != nil {
 		log.WithFields(log.Fields{
 			"err": err,
@@ -198,6 +137,69 @@ func (s *Service) Control(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
+}
+
+func (s *Service) call(req *requestEnvelope) (*responseEnvelope, error) {
+	v := reflect.ValueOf(s.Impl)
+
+	name := req.Body.Action.XMLName.Local
+	a := s.Desc.ActionByName(name)
+
+	var in []reflect.Value
+	for _, arg := range req.Body.Action.Arguments {
+		t := v.Elem().FieldByName(a.ArgumentByName(arg.XMLName.Local).RelatedStateVariable).Type()
+		switch t.Kind() {
+		case reflect.String:
+			in = append(in, reflect.ValueOf(arg.Value))
+		case reflect.Uint32:
+			n, err := strconv.ParseUint(arg.Value, 10, 32)
+			if err != nil {
+				return nil, err
+			}
+			in = append(in, reflect.ValueOf(uint32(n)))
+		default:
+			return nil, fmt.Errorf("unknown argument type: %v", t)
+		}
+	}
+
+	m := v.MethodByName(name)
+	if m.Kind() == reflect.Invalid {
+		return nil, fmt.Errorf("method not implemented: %s", name)
+	}
+	out := m.Call(in)
+
+	last := out[len(out)-1]
+	if last.Type() == reflect.TypeOf((*error)(nil)).Elem() {
+		out = out[:len(out)-1]
+		if err, ok := last.Interface().(error); ok {
+			// TODO: return soap error
+			return nil, fmt.Errorf("method %s failed: %v", name, err)
+		}
+	}
+
+	resp := responseEnvelope{
+		XMLNSS:        "http://schemas.xmlsoap.org/soap/envelope/",
+		EncodingStyle: "http://schemas.xmlsoap.org/soap/encoding/",
+		ResponseBody: body{
+			Action: action{
+				XMLName: xml.Name{
+					Local: "u:" + name + "Response",
+				},
+				XMLNSU: s.Type,
+			},
+		},
+	}
+
+	for i, o := range out {
+		arg := a.OutArgumentByIndex(i)
+		resp.ResponseBody.Action.Arguments = append(resp.ResponseBody.Action.Arguments, argument{
+			XMLName: xml.Name{
+				Local: arg.Name,
+			},
+			Value: fmt.Sprint(o.Interface()),
+		})
+	}
+	return &resp, nil
 }
 
 func (s *Service) Event(w http.ResponseWriter, r *http.Request) {

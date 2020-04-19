@@ -39,8 +39,10 @@ func main() {
 		panic(err)
 	}
 
-	s, err := upnp.NewServer(i, []upnp.Service{
+	s, err := upnp.NewDevice(i, "urn:schemas-upnp-org:device:MediaServer:1", []upnp.Service{
 		{
+			ID:   "urn:upnp-org:serviceId:ContentDirectory",
+			Type: "urn:schemas-upnp-org:service:ContentDirectory:1",
 			Desc: &picoms.Description,
 			Impl: &picoms.ContentDirectory{
 				Path: flag.Args()[0],

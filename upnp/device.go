@@ -26,6 +26,11 @@ var (
 	serverProductToken = "picoms/0.0"
 )
 
+const (
+	all        = "ssdp:all"
+	rootDevice = "upnp:rootdevice"
+)
+
 func init() {
 	out, err := exec.Command("uname", "-sr").Output()
 	if err != nil {
@@ -45,17 +50,18 @@ const (
 	defaultInterval   = 3 * time.Second
 )
 
-type Server struct {
+type Device struct {
 	http.Server
 
 	UUID       uuid.UUID
+	Type       string
 	Interface  *net.Interface
 	Interval   time.Duration
 	SearchAddr *net.UDPAddr
 	Services   []Service
 }
 
-func NewServer(i *net.Interface, services []Service) (*Server, error) {
+func NewDevice(i *net.Interface, deviceType string, services []Service) (*Device, error) {
 	a, err := localAddress(i)
 	if err != nil {
 		return nil, err
@@ -68,12 +74,13 @@ func NewServer(i *net.Interface, services []Service) (*Server, error) {
 
 	addr := fmt.Sprintf("%s:%d", a, defaultHTTPPort)
 
-	s := Server{
+	s := Device{
 		Server: http.Server{
 			Addr: addr,
 		},
 
 		UUID:       uuid.NewV4(),
+		Type:       deviceType,
 		Interface:  i,
 		Interval:   defaultInterval,
 		SearchAddr: sa,
@@ -98,7 +105,7 @@ func NewServer(i *net.Interface, services []Service) (*Server, error) {
 	return &s, nil
 }
 
-func (s *Server) Describe(w http.ResponseWriter, r *http.Request) {
+func (d *Device) Describe(w http.ResponseWriter, r *http.Request) {
 	type service struct {
 		ServiceType string `xml:"serviceType"`
 		ServiceID   string `xml:"serviceId"`
@@ -127,7 +134,7 @@ func (s *Server) Describe(w http.ResponseWriter, r *http.Request) {
 		Device      device      `xml:"device"`
 	}
 
-	b, err := xml.MarshalIndent(deviceDescription{
+	desc := deviceDescription{
 		ConfigID: 0,
 		SpecVersion: SpecVersion{
 			Major: 1,
@@ -138,20 +145,20 @@ func (s *Server) Describe(w http.ResponseWriter, r *http.Request) {
 			FriendlyName: "picoms",
 			Manufacturer: "ichiban",
 			ModelName:    serverProductToken,
-			UDN:          fmt.Sprintf("uuid:%s", s.UUID),
-			ServiceList: serviceList{
-				Services: []service{
-					{
-						ServiceType: serviceType,
-						ServiceID:   serviceID,
-						SCPDURL:     "/0/service",
-						ControlURL:  "/0/control",
-						EventSubURL: "/0/event",
-					},
-				},
-			},
+			UDN:          fmt.Sprintf("uuid:%d", d.UUID),
 		},
-	}, "", "  ")
+	}
+	for i, s := range d.Services {
+		desc.Device.ServiceList.Services = append(desc.Device.ServiceList.Services, service{
+			ServiceType: s.Type,
+			ServiceID:   s.ID,
+			SCPDURL:     fmt.Sprintf("/%d/service", i),
+			ControlURL:  fmt.Sprintf("/%d/control", i),
+			EventSubURL: fmt.Sprintf("/%d/event", i),
+		})
+	}
+
+	b, err := xml.MarshalIndent(&desc, "", "  ")
 	if err != nil {
 		log.WithFields(log.Fields{
 			"err": err,
@@ -177,9 +184,9 @@ func (s *Server) Describe(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) Advertise(done <-chan struct{}) error {
+func (d *Device) Advertise(done <-chan struct{}) error {
 	fs := log.Fields{
-		"uuid": s.UUID,
+		"uuid": d.UUID,
 		"addr": multicastAddress,
 	}
 	log.WithFields(fs).Info("start advertising")
@@ -191,48 +198,79 @@ func (s *Server) Advertise(done <-chan struct{}) error {
 	}
 	defer c.Close()
 
-	defer func() {
-		if err := s.notifyByeBye(c, "upnp:rootdevice", fmt.Sprintf("uuid:%s::upnp:rootdevice", s.UUID)); err != nil {
-			log.Print(err)
-			return
-		}
-		time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
-		if err := s.notifyByeBye(c, fmt.Sprintf("uuid:%s", s.UUID), fmt.Sprintf("uuid:%s", s.UUID)); err != nil {
-			log.Print(err)
-			return
-		}
-		time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
-		if err := s.notifyByeBye(c, "urn:schemas-upnp-org:device:MediaServer:1", fmt.Sprintf("uuid:%s::urn:schemas-upnp-org:device:MediaServer:1", s.UUID)); err != nil {
-			log.Print(err)
-			return
-		}
-		time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
-		if err := s.notifyByeBye(c, "urn:schemas-upnp-org:service:ContentDirectory:1", fmt.Sprintf("uuid:%s::urn:schemas-upnp-org:service:ContentDirectory:1", s.UUID)); err != nil {
-			log.Print(err)
-			return
-		}
-	}()
-
+	defer d.bye(c)
 	for {
 		select {
 		case <-done:
 			return nil
-		case <-time.After(s.Interval):
-			if err := s.notifyAlive(c, "upnp:rootdevice", fmt.Sprintf("uuid:%s::upnp:rootdevice", s.UUID)); err != nil {
+		case <-time.After(d.Interval):
+			if err := d.alive(c); err != nil {
 				return err
 			}
-			time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
-			if err := s.notifyAlive(c, fmt.Sprintf("uuid:%s", s.UUID), fmt.Sprintf("uuid:%s", s.UUID)); err != nil {
-				return err
-			}
-			time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
-			if err := s.notifyAlive(c, "urn:schemas-upnp-org:device:MediaServer:1", fmt.Sprintf("uuid:%s::urn:schemas-upnp-org:device:MediaServer:1", s.UUID)); err != nil {
-				return err
-			}
-			time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
-			if err := s.notifyAlive(c, "urn:schemas-upnp-org:service:ContentDirectory:1", fmt.Sprintf("uuid:%s::urn:schemas-upnp-org:service:ContentDirectory:1", s.UUID)); err != nil {
-				return err
-			}
+		}
+	}
+}
+
+func (d *Device) alive(c net.Conn) error {
+	uuid := fmt.Sprintf("uuid:%d", d.UUID)
+
+	if err := d.notifyAlive(c, rootDevice, strings.Join([]string{uuid, rootDevice}, "::")); err != nil {
+		return err
+	}
+
+	time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
+	if err := d.notifyAlive(c, uuid, uuid); err != nil {
+		return err
+	}
+
+	time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
+	if err := d.notifyAlive(c, d.Type, strings.Join([]string{uuid, d.Type}, "::")); err != nil {
+		return err
+	}
+
+	uniqServiceTypes := make(map[string]struct{}, len(d.Services))
+	for _, s := range d.Services {
+		uniqServiceTypes[s.Type] = struct{}{}
+	}
+	for t := range uniqServiceTypes {
+		time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
+		if err := d.notifyAlive(c, t, strings.Join([]string{uuid, t}, "::")); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (d *Device) bye(c net.Conn) {
+	uuid := fmt.Sprintf("uuid:%d", d.UUID)
+
+	if err := d.notifyByeBye(c, rootDevice, strings.Join([]string{uuid, rootDevice}, "::")); err != nil {
+		log.Print(err)
+		return
+	}
+
+	time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
+	if err := d.notifyByeBye(c, uuid, uuid); err != nil {
+		log.Print(err)
+		return
+	}
+
+	time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
+	if err := d.notifyByeBye(c, d.Type, strings.Join([]string{uuid, d.Type}, "::")); err != nil {
+		log.Print(err)
+		return
+	}
+
+	uniqServiceTypes := make(map[string]struct{}, len(d.Services))
+	for _, s := range d.Services {
+		uniqServiceTypes[s.Type] = struct{}{}
+	}
+	for t := range uniqServiceTypes {
+		time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
+		if err := d.notifyByeBye(c, t, strings.Join([]string{uuid, t}, "::")); err != nil {
+			log.Print(err)
+			return
 		}
 	}
 }
@@ -256,7 +294,7 @@ const (
 	headerSearchTarget        = "ST"
 )
 
-func (s *Server) notifyAlive(w io.Writer, nt, usn string) error {
+func (d *Device) notifyAlive(w io.Writer, nt, usn string) error {
 	defer log.WithFields(log.Fields{"nt": nt, "usn": usn}).Debug("notify alive")
 
 	r := http.Request{
@@ -265,26 +303,26 @@ func (s *Server) notifyAlive(w io.Writer, nt, usn string) error {
 		ProtoMajor: 1,
 		ProtoMinor: 1,
 		Header: http.Header{
-			headerCacheControl:        []string{fmt.Sprintf("max-age = %d", s.Interval/time.Second)},
-			headerLocation:            []string{s.url().String()},
+			headerCacheControl:        []string{fmt.Sprintf("max-age = %d", d.Interval/time.Second)},
+			headerLocation:            []string{d.url().String()},
 			headerNotificationType:    []string{nt},
 			headerNotificationSubType: []string{"ssdp:alive"},
-			headerServer:              []string{s.productTokens()},
+			headerServer:              []string{d.productTokens()},
 			headerUniqueServiceName:   []string{usn},
 			headerBootID:              []string{"0"},
 			headerConfigID:            []string{"0"},
-			headerSearchPort:          []string{strconv.Itoa(s.SearchAddr.Port)},
+			headerSearchPort:          []string{strconv.Itoa(d.SearchAddr.Port)},
 		},
 		Host: multicastAddress,
 	}
 	return r.Write(w)
 }
 
-func (s *Server) productTokens() string {
+func (d *Device) productTokens() string {
 	return strings.Join([]string{osProductToken, upnpProductToken, serverProductToken}, " ")
 }
 
-func (s *Server) notifyByeBye(w io.Writer, nt, usn string) error {
+func (d *Device) notifyByeBye(w io.Writer, nt, usn string) error {
 	defer log.WithFields(log.Fields{"nt": nt, "usn": usn}).Debug("notify bye bye")
 
 	r := http.Request{
@@ -335,9 +373,9 @@ func localAddress(i *net.Interface) (string, error) {
 	return "", errors.New("not found")
 }
 
-func (s *Server) ReplySearch(done <-chan struct{}) error {
+func (d *Device) ReplySearch(done <-chan struct{}) error {
 	fs := log.Fields{
-		"addr": s.Addr,
+		"addr": d.Addr,
 	}
 	log.WithFields(fs).Info("start replying")
 	defer log.WithFields(fs).Info("end replying")
@@ -350,131 +388,181 @@ func (s *Server) ReplySearch(done <-chan struct{}) error {
 	reqs := make(chan *http.Request)
 	defer close(reqs)
 
-	multi, err := net.ListenMulticastUDP("udp", s.Interface, addr)
+	multi, err := net.ListenMulticastUDP("udp", d.Interface, addr)
 	if err != nil {
 		return fmt.Errorf("net.ListenMulticastUDP() failed: %w", err)
 	}
 	defer multi.Close()
+	go readReqs(multi, reqs)
 
-	go func() {
-		b := make([]byte, 1024)
-
-		for {
-			_, addr, err := multi.ReadFromUDP(b)
-			if err != nil {
-				continue
-			}
-			r, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(b)))
-			if err != nil {
-				continue
-			}
-			r.RemoteAddr = addr.String()
-			reqs <- r
-		}
-	}()
-
-	uni, err := net.ListenUDP("udp", s.SearchAddr)
+	uni, err := net.ListenUDP("udp", d.SearchAddr)
 	if err != nil {
-		s.SearchAddr.Port = 0
-		uni, err = net.ListenUDP("udp", s.SearchAddr)
+		d.SearchAddr.Port = 0
+		uni, err = net.ListenUDP("udp", d.SearchAddr)
 		if err != nil {
 			return fmt.Errorf("net.ListenUDP() failed: %w", err)
 		}
-		s.SearchAddr = uni.LocalAddr().(*net.UDPAddr)
+		d.SearchAddr = uni.LocalAddr().(*net.UDPAddr)
 	}
 	defer uni.Close()
-
-	go func() {
-		b := make([]byte, 1024)
-
-		for {
-			_, addr, err := multi.ReadFromUDP(b)
-			if err != nil {
-				continue
-			}
-			r, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(b)))
-			if err != nil {
-				continue
-			}
-			r.RemoteAddr = addr.String()
-			reqs <- r
-		}
-	}()
+	go readReqs(uni, reqs)
 
 	for {
 		select {
 		case <-done:
 			return nil
 		case r := <-reqs:
-			if r.Method != MethodMSearch {
-				continue
-			}
-
-			f := log.Fields{
-				"addr":   r.RemoteAddr,
-				"method": r.Method,
-				"url":    r.URL,
-			}
-			for k, v := range r.Header {
-				if len(v) == 0 {
-					continue
-				}
-				f[k] = v[0]
-			}
-			log.WithFields(f).Debug("ssdp req")
-
-			switch r.Header.Get(headerSearchTarget) {
-			case "ssdp:all":
-				if err := s.respond(r, "upnp:rootdevice", fmt.Sprintf("uuid:%s::upnp:rootdevice", s.UUID)); err != nil {
-					return err
-				}
-				if err := s.respond(r, fmt.Sprintf("uuid:%s", s.UUID), fmt.Sprintf("uuid:%s", s.UUID)); err != nil {
-					return err
-				}
-				if err := s.respond(r, "urn:schemas-upnp-org:device:MediaServer:1", fmt.Sprintf("uuid:%s::urn:schemas-upnp-org:device:MediaServer:1", s.UUID)); err != nil {
-					return err
-				}
-				if err := s.respond(r, "urn:schemas-upnp-org:service:ContentDirectory:1", fmt.Sprintf("uuid:%s::urn:schemas-upnp-org:service:ContentDirectory:1", s.UUID)); err != nil {
-					return err
-				}
-			case "upnp:rootdevice":
-				if err := s.respond(r, "upnp:rootdevice", fmt.Sprintf("uuid:%s::upnp:rootdevice", s.UUID)); err != nil {
-					return err
-				}
-			case fmt.Sprintf("uuid:%s", s.UUID):
-				if err := s.respond(r, fmt.Sprintf("uuid:%s", s.UUID), fmt.Sprintf("uuid:%s", s.UUID)); err != nil {
-					return err
-				}
-			case "urn:schemas-upnp-org:device:MediaServer:1":
-				if err := s.respond(r, "urn:schemas-upnp-org:device:MediaServer:1", fmt.Sprintf("uuid:%s::urn:schemas-upnp-org:device:MediaServer:1", s.UUID)); err != nil {
-					return err
-				}
-			case "urn:schemas-upnp-org:service:ContentDirectory:1":
-				if err := s.respond(r, "urn:schemas-upnp-org:service:ContentDirectory:1", fmt.Sprintf("uuid:%s::urn:schemas-upnp-org:service:ContentDirectory:1", s.UUID)); err != nil {
-					return err
-				}
+			if err := d.respondSearch(r); err != nil {
+				return err
 			}
 		}
 	}
 }
 
-func (s *Server) respond(r *http.Request, st, usn string) error {
+func (d *Device) respondSearch(r *http.Request) error {
+	f := log.Fields{
+		"addr":   r.RemoteAddr,
+		"method": r.Method,
+		"url":    r.URL,
+	}
+	for k, v := range r.Header {
+		if len(v) == 0 {
+			continue
+		}
+		f[k] = v[0]
+	}
+	log.WithFields(f).Debug("ssdp req")
+
+	st := r.Header.Get(headerSearchTarget)
+	var err error
+	switch {
+	case st == all:
+		err = d.respondAll(r)
+	case st == rootDevice:
+		err = d.respondRootDevice(r)
+	case st == fmt.Sprintf("uuid:%d", d.UUID):
+		err = d.respondUUID(r)
+	case st == d.Type:
+		err = d.respondDevice(r)
+	case strings.HasPrefix(st, "urn:schemas-upnp-org:service:"):
+		for _, srv := range d.Services {
+			if srv.Type == st {
+				err = d.respondServices(r)
+				break
+			}
+		}
+	}
+	return err
+}
+
+func (d *Device) respondAll(r *http.Request) error {
+	uuid := fmt.Sprintf("uuid:%d", d.UUID)
+
+	if err := d.respond(r, rootDevice, strings.Join([]string{uuid, rootDevice}, "::")); err != nil {
+		return err
+	}
+
+	if err := d.respond(r, uuid, uuid); err != nil {
+		return err
+	}
+
+	if err := d.respond(r, d.Type, strings.Join([]string{uuid, d.Type}, "::")); err != nil {
+		return err
+	}
+
+	uniqServiceTypes := make(map[string]struct{}, len(d.Services))
+	for _, s := range d.Services {
+		uniqServiceTypes[s.Type] = struct{}{}
+	}
+	for t := range uniqServiceTypes {
+		if err := d.respond(r, t, strings.Join([]string{uuid, t}, "::")); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (d *Device) respondServices(r *http.Request) error {
+	uuid := fmt.Sprintf("uuid:%d", d.UUID)
+
+	uniqServiceTypes := make(map[string]struct{}, len(d.Services))
+	for _, s := range d.Services {
+		uniqServiceTypes[s.Type] = struct{}{}
+	}
+	for t := range uniqServiceTypes {
+		if err := d.respond(r, t, strings.Join([]string{uuid, t}, "::")); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (d *Device) respondDevice(r *http.Request) error {
+	uuid := fmt.Sprintf("uuid:%d", d.UUID)
+
+	if err := d.respond(r, d.Type, strings.Join([]string{uuid, d.Type}, "::")); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (d *Device) respondUUID(r *http.Request) error {
+	uuid := fmt.Sprintf("uuid:%d", d.UUID)
+
+	if err := d.respond(r, uuid, uuid); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (d *Device) respondRootDevice(r *http.Request) error {
+	uuid := fmt.Sprintf("uuid:%d", d.UUID)
+
+	if err := d.respond(r, rootDevice, strings.Join([]string{uuid, rootDevice}, "::")); err != nil {
+		return err
+	}
+	return nil
+}
+
+func readReqs(con *net.UDPConn, reqs chan *http.Request) {
+	b := make([]byte, 1024)
+
+	for {
+		_, addr, err := con.ReadFromUDP(b)
+		if err != nil {
+			continue
+		}
+		r, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(b)))
+		if err != nil {
+			continue
+		}
+		if r.Method != MethodMSearch {
+			continue
+		}
+		r.RemoteAddr = addr.String()
+		reqs <- r
+	}
+}
+
+func (d *Device) respond(r *http.Request, st, usn string) error {
 	resp := http.Response{
 		Status:     http.StatusText(http.StatusOK),
 		StatusCode: http.StatusOK,
 		ProtoMajor: 1,
 		ProtoMinor: 1,
 		Header: http.Header{
-			headerCacheControl:      []string{fmt.Sprintf("max-age = %d", s.Interval/time.Second)},
+			headerCacheControl:      []string{fmt.Sprintf("max-age = %d", d.Interval/time.Second)},
 			headerDate:              []string{time.Now().Format(time.RFC1123)},
 			headerExt:               []string{""},
-			headerLocation:          []string{s.url().String()},
-			headerServer:            []string{s.productTokens()},
+			headerLocation:          []string{d.url().String()},
+			headerServer:            []string{d.productTokens()},
 			headerSearchTarget:      []string{st},
 			headerUniqueServiceName: []string{usn},
 			headerBootID:            []string{"0"},
 			headerConfigID:          []string{"0"},
-			headerSearchPort:        []string{strconv.Itoa(s.SearchAddr.Port)},
+			headerSearchPort:        []string{strconv.Itoa(d.SearchAddr.Port)},
 		},
 	}
 
@@ -497,7 +585,7 @@ func (s *Server) respond(r *http.Request, st, usn string) error {
 		return err
 	}
 
-	// It's okay to fail because it's UDP!
+	// It'd okay to fail because it'd UDP!
 	if err := w.Flush(); err != nil {
 		log.WithFields(log.Fields{
 			"err": err,
@@ -507,10 +595,10 @@ func (s *Server) respond(r *http.Request, st, usn string) error {
 	return nil
 }
 
-func (s *Server) url() *url.URL {
+func (d *Device) url() *url.URL {
 	return &url.URL{
 		Scheme: "http",
-		Host:   s.Addr,
+		Host:   d.Addr,
 		Path:   "/",
 	}
 }
