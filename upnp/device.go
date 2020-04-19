@@ -206,7 +206,7 @@ func (d *Device) Advertise(done <-chan struct{}) error {
 }
 
 func (d *Device) alive(w io.Writer) error {
-	uuid := fmt.Sprintf("uuid:%d", d.UUID)
+	uuid := fmt.Sprintf("uuid:%s", d.UUID)
 
 	if err := d.notifyAlive(w, rootDevice, strings.Join([]string{uuid, rootDevice}, "::")); err != nil {
 		return err
@@ -237,7 +237,7 @@ func (d *Device) alive(w io.Writer) error {
 }
 
 func (d *Device) bye(w io.Writer) {
-	uuid := fmt.Sprintf("uuid:%d", d.UUID)
+	uuid := fmt.Sprintf("uuid:%s", d.UUID)
 
 	if err := d.notifyByeBye(w, rootDevice, strings.Join([]string{uuid, rootDevice}, "::")); err != nil {
 		log.Print(err)
@@ -437,7 +437,7 @@ func (d *Device) respondSearch(r *http.Request) error {
 		err = d.respondAll(r)
 	case st == rootDevice:
 		err = d.respondRootDevice(r)
-	case st == fmt.Sprintf("uuid:%d", d.UUID):
+	case st == fmt.Sprintf("uuid:%s", d.UUID):
 		err = d.respondUUID(r)
 	case st == d.Type:
 		err = d.respondDevice(r)
@@ -453,7 +453,7 @@ func (d *Device) respondSearch(r *http.Request) error {
 }
 
 func (d *Device) respondAll(r *http.Request) error {
-	uuid := fmt.Sprintf("uuid:%d", d.UUID)
+	uuid := fmt.Sprintf("uuid:%s", d.UUID)
 
 	if err := d.respond(r, rootDevice, strings.Join([]string{uuid, rootDevice}, "::")); err != nil {
 		return err
@@ -481,7 +481,7 @@ func (d *Device) respondAll(r *http.Request) error {
 }
 
 func (d *Device) respondServices(r *http.Request) error {
-	uuid := fmt.Sprintf("uuid:%d", d.UUID)
+	uuid := fmt.Sprintf("uuid:%s", d.UUID)
 
 	uniqServiceTypes := make(map[string]struct{}, len(d.Services))
 	for _, s := range d.Services {
@@ -497,7 +497,7 @@ func (d *Device) respondServices(r *http.Request) error {
 }
 
 func (d *Device) respondDevice(r *http.Request) error {
-	uuid := fmt.Sprintf("uuid:%d", d.UUID)
+	uuid := fmt.Sprintf("uuid:%s", d.UUID)
 
 	if err := d.respond(r, d.Type, strings.Join([]string{uuid, d.Type}, "::")); err != nil {
 		return err
@@ -506,7 +506,7 @@ func (d *Device) respondDevice(r *http.Request) error {
 }
 
 func (d *Device) respondUUID(r *http.Request) error {
-	uuid := fmt.Sprintf("uuid:%d", d.UUID)
+	uuid := fmt.Sprintf("uuid:%s", d.UUID)
 
 	if err := d.respond(r, uuid, uuid); err != nil {
 		return err
@@ -515,7 +515,7 @@ func (d *Device) respondUUID(r *http.Request) error {
 }
 
 func (d *Device) respondRootDevice(r *http.Request) error {
-	uuid := fmt.Sprintf("uuid:%d", d.UUID)
+	uuid := fmt.Sprintf("uuid:%s", d.UUID)
 
 	if err := d.respond(r, rootDevice, strings.Join([]string{uuid, rootDevice}, "::")); err != nil {
 		return err
