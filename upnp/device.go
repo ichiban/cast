@@ -372,7 +372,7 @@ var netListenUDP = net.ListenUDP
 
 func (d *Device) ReplySearch(done <-chan struct{}) error {
 	fs := log.Fields{
-		"addr": d.Addr,
+		"addr": d.SearchAddr,
 	}
 	log.WithFields(fs).Info("start replying")
 	defer log.WithFields(fs).Info("end replying")
