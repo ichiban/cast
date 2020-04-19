@@ -141,11 +141,11 @@ func (d *Device) Describe(w http.ResponseWriter, r *http.Request) {
 			Minor: 0,
 		},
 		Device: device{
-			DeviceType:   deviceType,
+			DeviceType:   d.Type,
 			FriendlyName: "picoms",
 			Manufacturer: "ichiban",
 			ModelName:    serverProductToken,
-			UDN:          fmt.Sprintf("uuid:%d", d.UUID),
+			UDN:          fmt.Sprintf("uuid:%s", d.UUID),
 		},
 	}
 	for i, s := range d.Services {
@@ -158,31 +158,23 @@ func (d *Device) Describe(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	b, err := xml.MarshalIndent(&desc, "", "  ")
-	if err != nil {
-		log.WithFields(log.Fields{
-			"err": err,
-		}).Error("failed to marshal device description")
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
+	b, _ := xml.MarshalIndent(&desc, "", "  ")
 	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
 	if _, err := w.Write([]byte(xmlDeclaration)); err != nil {
 		log.WithFields(log.Fields{
 			"err": err,
 		}).Error("failed to write xml declaration")
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 	if _, err := w.Write(b); err != nil {
 		log.WithFields(log.Fields{
 			"err": err,
 		}).Error("failed to write device declaration")
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 }
+
+var netDial = net.Dial
 
 func (d *Device) Advertise(done <-chan struct{}) error {
 	fs := log.Fields{
@@ -192,7 +184,7 @@ func (d *Device) Advertise(done <-chan struct{}) error {
 	log.WithFields(fs).Info("start advertising")
 	defer log.WithFields(fs).Info("end advertising")
 
-	c, err := net.Dial("udp", multicastAddress)
+	c, err := netDial("udp", multicastAddress)
 	if err != nil {
 		return err
 	}
@@ -211,20 +203,20 @@ func (d *Device) Advertise(done <-chan struct{}) error {
 	}
 }
 
-func (d *Device) alive(c net.Conn) error {
+func (d *Device) alive(w io.Writer) error {
 	uuid := fmt.Sprintf("uuid:%d", d.UUID)
 
-	if err := d.notifyAlive(c, rootDevice, strings.Join([]string{uuid, rootDevice}, "::")); err != nil {
+	if err := d.notifyAlive(w, rootDevice, strings.Join([]string{uuid, rootDevice}, "::")); err != nil {
 		return err
 	}
 
 	time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
-	if err := d.notifyAlive(c, uuid, uuid); err != nil {
+	if err := d.notifyAlive(w, uuid, uuid); err != nil {
 		return err
 	}
 
 	time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
-	if err := d.notifyAlive(c, d.Type, strings.Join([]string{uuid, d.Type}, "::")); err != nil {
+	if err := d.notifyAlive(w, d.Type, strings.Join([]string{uuid, d.Type}, "::")); err != nil {
 		return err
 	}
 
@@ -234,7 +226,7 @@ func (d *Device) alive(c net.Conn) error {
 	}
 	for t := range uniqServiceTypes {
 		time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
-		if err := d.notifyAlive(c, t, strings.Join([]string{uuid, t}, "::")); err != nil {
+		if err := d.notifyAlive(w, t, strings.Join([]string{uuid, t}, "::")); err != nil {
 			return err
 		}
 	}
@@ -242,22 +234,22 @@ func (d *Device) alive(c net.Conn) error {
 	return nil
 }
 
-func (d *Device) bye(c net.Conn) {
+func (d *Device) bye(w io.Writer) {
 	uuid := fmt.Sprintf("uuid:%d", d.UUID)
 
-	if err := d.notifyByeBye(c, rootDevice, strings.Join([]string{uuid, rootDevice}, "::")); err != nil {
+	if err := d.notifyByeBye(w, rootDevice, strings.Join([]string{uuid, rootDevice}, "::")); err != nil {
 		log.Print(err)
 		return
 	}
 
 	time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
-	if err := d.notifyByeBye(c, uuid, uuid); err != nil {
+	if err := d.notifyByeBye(w, uuid, uuid); err != nil {
 		log.Print(err)
 		return
 	}
 
 	time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
-	if err := d.notifyByeBye(c, d.Type, strings.Join([]string{uuid, d.Type}, "::")); err != nil {
+	if err := d.notifyByeBye(w, d.Type, strings.Join([]string{uuid, d.Type}, "::")); err != nil {
 		log.Print(err)
 		return
 	}
@@ -268,7 +260,7 @@ func (d *Device) bye(c net.Conn) {
 	}
 	for t := range uniqServiceTypes {
 		time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
-		if err := d.notifyByeBye(c, t, strings.Join([]string{uuid, t}, "::")); err != nil {
+		if err := d.notifyByeBye(w, t, strings.Join([]string{uuid, t}, "::")); err != nil {
 			log.Print(err)
 			return
 		}
@@ -373,6 +365,9 @@ func localAddress(i *net.Interface) (string, error) {
 	return "", errors.New("not found")
 }
 
+var netListenMulticastUDP = net.ListenMulticastUDP
+var netListenUDP = net.ListenUDP
+
 func (d *Device) ReplySearch(done <-chan struct{}) error {
 	fs := log.Fields{
 		"addr": d.Addr,
@@ -388,17 +383,17 @@ func (d *Device) ReplySearch(done <-chan struct{}) error {
 	reqs := make(chan *http.Request)
 	defer close(reqs)
 
-	multi, err := net.ListenMulticastUDP("udp", d.Interface, addr)
+	multi, err := netListenMulticastUDP("udp", d.Interface, addr)
 	if err != nil {
 		return fmt.Errorf("net.ListenMulticastUDP() failed: %w", err)
 	}
 	defer multi.Close()
 	go readReqs(multi, reqs)
 
-	uni, err := net.ListenUDP("udp", d.SearchAddr)
+	uni, err := netListenUDP("udp", d.SearchAddr)
 	if err != nil {
 		d.SearchAddr.Port = 0
-		uni, err = net.ListenUDP("udp", d.SearchAddr)
+		uni, err = netListenUDP("udp", d.SearchAddr)
 		if err != nil {
 			return fmt.Errorf("net.ListenUDP() failed: %w", err)
 		}

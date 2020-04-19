@@ -13,10 +13,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const (
-	deviceType = "urn:schemas-upnp-org:device:MediaServer:1"
-)
-
 const xmlDeclaration = "<?xml version=\"1.0\"?>\n"
 
 type Service struct {
@@ -46,14 +42,12 @@ func (s *Service) Describe(w http.ResponseWriter, r *http.Request) {
 		log.WithFields(log.Fields{
 			"err": err,
 		}).Error("failed to write xml declaration")
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 	if _, err := w.Write(b); err != nil {
 		log.WithFields(log.Fields{
 			"err": err,
 		}).Error("failed to write body")
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 }
