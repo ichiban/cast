@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io/ioutil"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	flag "github.com/spf13/pflag"
 
 	"github.com/ichiban/cast"
@@ -25,7 +28,7 @@ func main() {
 	flag.Parse()
 
 	if verbose {
-		logrus.SetLevel(logrus.DebugLevel)
+		log.SetLevel(log.DebugLevel)
 	}
 
 	sig := make(chan os.Signal, 1)
@@ -36,8 +39,28 @@ func main() {
 
 	i, err := net.InterfaceByName(iface)
 	if err != nil {
-		panic(err)
+		log.WithFields(log.Fields{
+			"interface": iface,
+			"err":       err,
+		}).Error("unknown interface")
+		return
 	}
+
+	path, close, err := path()
+	if err != nil {
+		log.WithFields(log.Fields{
+			"err": err,
+		}).Error("failed to get path")
+		return
+	}
+	defer close()
+
+	log.WithFields(log.Fields{
+		"interface": iface,
+		"name":      name,
+		"verbose":   verbose,
+		"path":      path,
+	}).Info("cast")
 
 	s, err := upnp.NewDevice(i, "urn:schemas-upnp-org:device:MediaServer:1", name, []upnp.Service{
 		{
@@ -45,12 +68,15 @@ func main() {
 			Type: "urn:schemas-upnp-org:service:ContentDirectory:1",
 			Desc: &cast.Description,
 			Impl: &cast.ContentDirectory{
-				Path: flag.Args()[0],
+				Path: path,
 			},
 		},
 	})
 	if err != nil {
-		panic(err)
+		log.WithFields(log.Fields{
+			"err": err,
+		}).Error("failed to create device")
+		return
 	}
 
 	var wg sync.WaitGroup
@@ -60,7 +86,9 @@ func main() {
 	go func() {
 		defer wg.Done()
 		if err := s.Advertise(done); err != nil {
-			panic(err)
+			log.WithFields(log.Fields{
+				"err": err,
+			}).Error("failed to advertise")
 		}
 	}()
 
@@ -68,7 +96,9 @@ func main() {
 	go func() {
 		defer wg.Done()
 		if err := s.ReplySearch(done); err != nil {
-			panic(err)
+			log.WithFields(log.Fields{
+				"err": err,
+			}).Error("failed to reply")
 		}
 	}()
 
@@ -83,9 +113,69 @@ func main() {
 		defer wg.Done()
 		<-sig
 		if err := s.Shutdown(context.Background()); err != nil {
-			panic(err)
+			log.WithFields(log.Fields{
+				"err": err,
+			}).Error("failed to shutdown")
 		}
 		done <- struct{}{}
 		done <- struct{}{}
 	}()
+}
+
+func path() (string, func(), error) {
+	var path string
+	var close func()
+	switch len(flag.Args()) {
+	case 0:
+		dir, err := os.Getwd()
+		if err != nil {
+			return "", nil, err
+		}
+		path = dir
+		close = func() {}
+	case 1:
+		path = flag.Args()[0]
+		var err error
+		path, err = filepath.Abs(path)
+		if err != nil {
+			return "", nil, err
+		}
+		f, err := os.Stat(path)
+		if err != nil {
+			return "", nil, err
+		}
+		if f.IsDir() {
+			close = func() {}
+			break
+		}
+		fallthrough
+	default:
+		temp, err := ioutil.TempDir("", "cast")
+		if err != nil {
+			return "", nil, err
+		}
+		close = func() { os.RemoveAll(temp) }
+
+		count := map[string]int{}
+		for _, p := range flag.Args() {
+			p, err = filepath.Abs(p)
+			if err != nil {
+				return "", nil, err
+			}
+			if _, err := os.Stat(p); err != nil {
+				return "", nil, err
+			}
+			base := filepath.Base(p)
+			count[base]++
+			if n := count[base]; n > 1 {
+				base = fmt.Sprintf("%s (%d)", base, n)
+			}
+			if err := os.Symlink(p, filepath.Join(temp, base)); err != nil {
+				return "", nil, err
+			}
+		}
+
+		path = temp
+	}
+	return path, close, nil
 }
