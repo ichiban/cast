@@ -1,6 +1,9 @@
 package upnp
 
 import (
+	"bufio"
+	"bytes"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -128,7 +131,6 @@ func TestDevice_Advertise(t *testing.T) {
 	var c mockConn
 	c.On("Write", mock.Anything).Return(1024, nil).Times(10)
 	c.On("Close").Return(nil)
-	defer c.AssertExpectations(t)
 
 	netDial = func(network, address string) (conn net.Conn, err error) {
 		return &c, nil
@@ -136,6 +138,7 @@ func TestDevice_Advertise(t *testing.T) {
 	defer func() { netDial = net.Dial }()
 
 	done := make(chan struct{}, 1)
+	defer func() {}()
 
 	var wg sync.WaitGroup
 
@@ -144,13 +147,13 @@ func TestDevice_Advertise(t *testing.T) {
 		Interval:   300 * time.Millisecond,
 		Services: []Service{
 			{
-				Type: "foo",
+				Type: "urn:schemas-upnp-org:service:foo:1",
 			},
 			{
-				Type: "foo",
+				Type: "urn:schemas-upnp-org:service:foo:1",
 			},
 			{
-				Type: "bar",
+				Type: "urn:schemas-upnp-org:service:bar:1",
 			},
 		},
 	}
@@ -167,18 +170,152 @@ func TestDevice_Advertise(t *testing.T) {
 
 func TestDevice_ReplySearch(t *testing.T) {
 	done := make(chan struct{}, 1)
+	defer close(done)
 
-	var wg sync.WaitGroup
+	multi := &net.UDPConn{}
+	netListenMulticastUDP = func(network string, ifi *net.Interface, gaddr *net.UDPAddr) (conn *net.UDPConn, err error) {
+		return multi, nil
+	}
+	defer func() { netListenMulticastUDP = net.ListenMulticastUDP }()
 
-	d := Device{}
-	wg.Add(1)
+	uni := &net.UDPConn{}
+	netListenUDP = func(network string, laddr *net.UDPAddr) (conn *net.UDPConn, err error) {
+		return uni, nil
+	}
+	defer func() { netListenUDP = net.ListenUDP }()
+
+	var c mockConn
+	c.On("Write", mock.Anything).Return(0, nil)
+	c.On("Close").Return(nil)
+	c.responded = make(chan *http.Response, 1)
+	defer close(c.responded)
+
+	netDial = func(network, address string) (conn net.Conn, err error) {
+		return &c, nil
+	}
+	defer func() { netDial = net.Dial }()
+
+	requested := make(chan *http.Request, 1)
+	defer close(requested)
+
+	netUDPConnReadFromUDP = func(conn *net.UDPConn, b []byte) (i int, addr *net.UDPAddr, err error) {
+		r := <-requested
+		if r == nil {
+			return 0, nil, io.EOF
+		}
+		var buf bytes.Buffer
+		assert.NoError(t, r.Write(&buf))
+		copy(b, buf.Bytes())
+		return buf.Len(), &net.UDPAddr{}, nil
+	}
+	defer func() { netUDPConnReadFromUDP = (*net.UDPConn).ReadFromUDP }()
+
+	d := Device{
+		Type:       "urn:schemas-upnp-org:device:test:1",
+		SearchAddr: &net.UDPAddr{},
+		Services: []Service{
+			{
+				Type: "urn:schemas-upnp-org:service:foo:1",
+			},
+			{
+				Type: "urn:schemas-upnp-org:service:bar:1",
+			},
+		},
+	}
 	go func() {
-		wg.Done()
 		assert.NoError(t, d.ReplySearch(done))
 	}()
 
-	done <- struct{}{}
-	wg.Wait()
+	t.Run("all", func(t *testing.T) {
+		requested <- &http.Request{
+			Method: MethodMSearch,
+			URL:    &url.URL{},
+			Header: http.Header{
+				headerSearchTarget: []string{all},
+			},
+		}
+
+		resp := <-c.responded
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, rootDevice, resp.Header.Get(headerSearchTarget))
+		assert.Equal(t, "uuid:00000000-0000-0000-0000-000000000000::upnp:rootdevice", resp.Header.Get(headerUniqueServiceName))
+		resp = <-c.responded
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "uuid:00000000-0000-0000-0000-000000000000", resp.Header.Get(headerSearchTarget))
+		assert.Equal(t, "uuid:00000000-0000-0000-0000-000000000000", resp.Header.Get(headerUniqueServiceName))
+		resp = <-c.responded
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "urn:schemas-upnp-org:device:test:1", resp.Header.Get(headerSearchTarget))
+		assert.Equal(t, "uuid:00000000-0000-0000-0000-000000000000::urn:schemas-upnp-org:device:test:1", resp.Header.Get(headerUniqueServiceName))
+		resp = <-c.responded
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "urn:schemas-upnp-org:service:foo:1", resp.Header.Get(headerSearchTarget))
+		assert.Equal(t, "uuid:00000000-0000-0000-0000-000000000000::urn:schemas-upnp-org:service:foo:1", resp.Header.Get(headerUniqueServiceName))
+		resp = <-c.responded
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "urn:schemas-upnp-org:service:bar:1", resp.Header.Get(headerSearchTarget))
+		assert.Equal(t, "uuid:00000000-0000-0000-0000-000000000000::urn:schemas-upnp-org:service:bar:1", resp.Header.Get(headerUniqueServiceName))
+	})
+
+	t.Run("root device", func(t *testing.T) {
+		requested <- &http.Request{
+			Method: MethodMSearch,
+			URL:    &url.URL{},
+			Header: http.Header{
+				headerSearchTarget: []string{rootDevice},
+			},
+		}
+
+		resp := <-c.responded
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, rootDevice, resp.Header.Get(headerSearchTarget))
+		assert.Equal(t, "uuid:00000000-0000-0000-0000-000000000000::upnp:rootdevice", resp.Header.Get(headerUniqueServiceName))
+	})
+
+	t.Run("UUID", func(t *testing.T) {
+		requested <- &http.Request{
+			Method: MethodMSearch,
+			URL:    &url.URL{},
+			Header: http.Header{
+				headerSearchTarget: []string{"uuid:00000000-0000-0000-0000-000000000000"},
+			},
+		}
+
+		resp := <-c.responded
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "uuid:00000000-0000-0000-0000-000000000000", resp.Header.Get(headerSearchTarget))
+		assert.Equal(t, "uuid:00000000-0000-0000-0000-000000000000", resp.Header.Get(headerUniqueServiceName))
+	})
+
+	t.Run("device type", func(t *testing.T) {
+		requested <- &http.Request{
+			Method: MethodMSearch,
+			URL:    &url.URL{},
+			Header: http.Header{
+				headerSearchTarget: []string{"urn:schemas-upnp-org:device:test:1"},
+			},
+		}
+
+		resp := <-c.responded
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "urn:schemas-upnp-org:device:test:1", resp.Header.Get(headerSearchTarget))
+		assert.Equal(t, "uuid:00000000-0000-0000-0000-000000000000::urn:schemas-upnp-org:device:test:1", resp.Header.Get(headerUniqueServiceName))
+	})
+
+	t.Run("service", func(t *testing.T) {
+		requested <- &http.Request{
+			Method: MethodMSearch,
+			URL:    &url.URL{},
+			Header: http.Header{
+				headerSearchTarget: []string{"urn:schemas-upnp-org:service:foo:1"},
+			},
+		}
+
+		resp := <-c.responded
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "urn:schemas-upnp-org:service:foo:1", resp.Header.Get(headerSearchTarget))
+		assert.Equal(t, "uuid:00000000-0000-0000-0000-000000000000::urn:schemas-upnp-org:service:foo:1", resp.Header.Get(headerUniqueServiceName))
+	})
 }
 
 type mockServiceImpl struct {
@@ -195,6 +332,8 @@ func (m *mockServiceImpl) SetBaseURL(u *url.URL) {
 
 type mockConn struct {
 	mock.Mock
+
+	responded chan *http.Response
 }
 
 func (m *mockConn) Read(b []byte) (n int, err error) {
@@ -203,6 +342,11 @@ func (m *mockConn) Read(b []byte) (n int, err error) {
 }
 
 func (m *mockConn) Write(b []byte) (n int, err error) {
+	resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(b)), nil)
+	if err != nil {
+		return len(b), nil
+	}
+	m.responded <- resp
 	args := m.Called(b)
 	return args.Int(0), args.Error(1)
 }

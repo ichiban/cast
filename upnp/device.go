@@ -444,7 +444,7 @@ func (d *Device) respondSearch(r *http.Request) error {
 	case strings.HasPrefix(st, "urn:schemas-upnp-org:service:"):
 		for _, srv := range d.Services {
 			if srv.Type == st {
-				err = d.respondServices(r)
+				err = d.respondService(r, &srv)
 				break
 			}
 		}
@@ -467,11 +467,19 @@ func (d *Device) respondAll(r *http.Request) error {
 		return err
 	}
 
-	uniqServiceTypes := make(map[string]struct{}, len(d.Services))
+	uniqServiceTypes := make([]string, 0, len(d.Services))
+
+services:
 	for _, s := range d.Services {
-		uniqServiceTypes[s.Type] = struct{}{}
+		for _, t := range uniqServiceTypes {
+			if t == s.Type {
+				continue services
+			}
+		}
+		uniqServiceTypes = append(uniqServiceTypes, s.Type)
 	}
-	for t := range uniqServiceTypes {
+
+	for _, t := range uniqServiceTypes {
 		if err := d.respond(r, t, strings.Join([]string{uuid, t}, "::")); err != nil {
 			return err
 		}
@@ -480,17 +488,11 @@ func (d *Device) respondAll(r *http.Request) error {
 	return nil
 }
 
-func (d *Device) respondServices(r *http.Request) error {
+func (d *Device) respondService(r *http.Request, s *Service) error {
 	uuid := fmt.Sprintf("uuid:%s", d.UUID)
 
-	uniqServiceTypes := make(map[string]struct{}, len(d.Services))
-	for _, s := range d.Services {
-		uniqServiceTypes[s.Type] = struct{}{}
-	}
-	for t := range uniqServiceTypes {
-		if err := d.respond(r, t, strings.Join([]string{uuid, t}, "::")); err != nil {
-			return err
-		}
+	if err := d.respond(r, s.Type, strings.Join([]string{uuid, s.Type}, "::")); err != nil {
+		return err
 	}
 
 	return nil
@@ -523,11 +525,13 @@ func (d *Device) respondRootDevice(r *http.Request) error {
 	return nil
 }
 
+var netUDPConnReadFromUDP = (*net.UDPConn).ReadFromUDP
+
 func readReqs(con *net.UDPConn, reqs chan *http.Request) {
 	b := make([]byte, 1024)
 
 	for {
-		_, addr, err := con.ReadFromUDP(b)
+		_, addr, err := netUDPConnReadFromUDP(con, b)
 		if err != nil {
 			continue
 		}
@@ -563,7 +567,7 @@ func (d *Device) respond(r *http.Request, st, usn string) error {
 		},
 	}
 
-	conn, err := net.Dial("udp", r.RemoteAddr)
+	conn, err := netDial("udp", r.RemoteAddr)
 	if err != nil {
 		return fmt.Errorf("net.Dial() failed: %w", err)
 	}
@@ -582,7 +586,7 @@ func (d *Device) respond(r *http.Request, st, usn string) error {
 		return err
 	}
 
-	// It'd okay to fail because it'd UDP!
+	// It's okay to fail because it's UDP!
 	if err := w.Flush(); err != nil {
 		log.WithFields(log.Fields{
 			"err": err,
