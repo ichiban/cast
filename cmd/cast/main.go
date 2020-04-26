@@ -17,12 +17,29 @@ import (
 	"github.com/ichiban/cast/upnp"
 )
 
+var defaultInterface string
+
+func init() {
+	is, err := net.Interfaces()
+	if err != nil {
+		return
+	}
+
+	wants := net.FlagUp | net.FlagBroadcast | net.FlagMulticast
+	for _, i := range is {
+		if i.Flags&wants == wants {
+			defaultInterface = i.Name
+			return
+		}
+	}
+}
+
 func main() {
 	var iface string
 	var name string
 	var verbose bool
 
-	flag.StringVarP(&iface, "interface", "i", "en0", "network interface")
+	flag.StringVarP(&iface, "interface", "i", defaultInterface, "network interface")
 	flag.StringVarP(&name, "name", "n", "Cast", "friendly name that appears on your player device")
 	flag.BoolVarP(&verbose, "verbose", "v", false, "shows more logs")
 	flag.Parse()
