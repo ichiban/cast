@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gabriel-vasile/mimetype"
+
 	log "github.com/sirupsen/logrus"
 
 	"github.com/ichiban/cast/upnp"
@@ -158,29 +160,6 @@ var Description = upnp.ServiceDescription{
 	}},
 }
 
-var formats = []struct {
-	ext   string
-	class string
-	mime  string
-}{
-	{ext: ".jpg", mime: "image/jpeg", class: classImageItem},
-	{ext: ".png", mime: "image/png", class: classImageItem},
-	{ext: ".gif", mime: "image/gif", class: classImageItem},
-	{ext: ".mp3", mime: "audio/mpeg", class: classAudioItem},
-	{ext: ".m4a", mime: "audio/mp4", class: classAudioItem},
-	{ext: ".wma", mime: "audio/x-ms-wma", class: classAudioItem},
-	{ext: ".wav", mime: "audio/x-wav", class: classAudioItem},
-	{ext: ".pcm", mime: "audio/L16", class: classAudioItem},
-	{ext: ".ogg", mime: "application/ogg", class: classAudioItem},
-	{ext: ".avi", mime: "video/x-msvideo", class: classVideoItem},
-	{ext: ".mpg", mime: "video/mpeg", class: classVideoItem},
-	{ext: ".mp4", mime: "video/mp4", class: classVideoItem},
-	{ext: ".wmv", mime: "video/x-ms-wmv", class: classVideoItem},
-	{ext: ".flv", mime: "video/x-flv", class: classVideoItem},
-	{ext: ".mov", mime: "video/quicktime", class: classVideoItem},
-	{ext: ".3gp", mime: "video/3gpp", class: classVideoItem},
-}
-
 type ContentDirectory struct {
 	BaseURL *url.URL
 	Path    string
@@ -251,31 +230,35 @@ func (c *ContentDirectory) Browse(objectID, browseFlag, filter string, startingI
 				StorageUsed: fi.Size(),
 			})
 		} else {
-			p, err := filepath.Rel(c.Path, filepath.Join(dirname, name))
+			fp := filepath.Join(dirname, name)
+			rp, err := filepath.Rel(c.Path, fp)
 			if err != nil {
 				return nil, 0, 0, 0, err
 			}
 
-			ext := strings.ToLower(filepath.Ext(p))
 			class := classItem
 			mime := "*"
-			for _, f := range formats {
-				if f.ext == ext {
-					class = f.class
-					mime = f.mime
-					break
+			if m, err := mimetype.DetectFile(fp); err == nil {
+				mime = m.String()
+				switch strings.Split(mime, "/")[0] {
+				case "image":
+					class = classImageItem
+				case "audio":
+					class = classAudioItem
+				case "video":
+					class = classVideoItem
 				}
 			}
 
 			d.Items = append(d.Items, item{
-				ID:         filepath.Join(dirname, name),
+				ID:         fp,
 				ParentID:   objectID,
 				Restricted: true,
 				Title:      name,
 				Class:      class,
 				Res: res{
 					ProtocolInfo: fmt.Sprintf("http-get:*:%s:*", mime),
-					URL:          c.url("media", p).String(),
+					URL:          c.url("media", rp).String(),
 				},
 			})
 		}
