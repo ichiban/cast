@@ -46,6 +46,8 @@ type item struct {
 	Title string `xml:"dc:title"`
 	Class string `xml:"upnp:class"`
 	Res   res    `xml:"res"`
+
+	path string
 }
 
 type res struct {

@@ -84,9 +84,7 @@ func main() {
 			ID:   "urn:upnp-org:serviceId:ContentDirectory",
 			Type: "urn:schemas-upnp-org:service:ContentDirectory:1",
 			Desc: &cast.Description,
-			Impl: &cast.ContentDirectory{
-				Path: path,
-			},
+			Impl: cast.NewContentDirectory(path),
 		},
 	})
 	if err != nil {

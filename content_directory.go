@@ -3,11 +3,12 @@ package cast
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -162,7 +163,7 @@ var Description = upnp.ServiceDescription{
 
 type ContentDirectory struct {
 	BaseURL *url.URL
-	Path    string
+	objects []interface{}
 
 	TransferIDs               string
 	A_ARG_TYPE_ObjectID       string
@@ -186,8 +187,85 @@ type ContentDirectory struct {
 	ContainerUpdateIDs        string
 }
 
+func NewContentDirectory(path string) *ContentDirectory {
+	containerIDs := map[string]string{}
+
+	var c ContentDirectory
+	filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+		id := strconv.Itoa(len(c.objects))
+		if info.IsDir() {
+			id := strconv.Itoa(len(c.objects))
+			containerIDs[path] = id
+			parentID := containerIDs[filepath.Dir(path)]
+			c.objects = append(c.objects, container{
+				ID:          id,
+				Restricted:  true,
+				ParentID:    parentID,
+				Searchable:  true,
+				Title:       filepath.Base(path),
+				Class:       classStorageFolder,
+				StorageUsed: info.Size(),
+			})
+		} else {
+			class := classItem
+			mime := "*"
+			if m, err := mimetype.DetectFile(path); err == nil {
+				mime = m.String()
+				switch strings.Split(mime, "/")[0] {
+				case "image":
+					class = classImageItem
+				case "audio":
+					class = classAudioItem
+				case "video":
+					class = classVideoItem
+				}
+			}
+
+			c.objects = append(c.objects, item{
+				ID:         id,
+				ParentID:   containerIDs[filepath.Dir(path)],
+				Restricted: true,
+				Title:      filepath.Base(path),
+				Class:      class,
+				Res: res{
+					ProtocolInfo: fmt.Sprintf("http-get:*:%s:*", mime),
+				},
+				path: path,
+			})
+		}
+		return nil
+	})
+	return &c
+}
+
 func (c *ContentDirectory) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	requestLog(http.StripPrefix("/media", http.FileServer(http.Dir(c.Path)))).ServeHTTP(w, r)
+	id, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/media/"))
+	if err != nil {
+		http.Error(w, "", http.StatusNotFound)
+		return
+	}
+	item, ok := c.objects[id].(item)
+	if !ok {
+		http.Error(w, "", http.StatusNotFound)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "", http.StatusMethodNotAllowed)
+		return
+	}
+	t := time.Now()
+	rw := responseWriter{
+		ResponseWriter: w,
+		statusCode:     http.StatusOK,
+	}
+	http.ServeFile(w, r, item.path)
+	log.WithFields(log.Fields{
+		"path":    item.path,
+		"addr":    r.RemoteAddr,
+		"elapsed": time.Since(t).Milliseconds(),
+		"ua":      r.Header.Get("User-Agent"),
+		"status":  rw.statusCode,
+	}).Info(r.URL.String())
 }
 
 func (c *ContentDirectory) SetBaseURL(url *url.URL) {
@@ -203,91 +281,32 @@ func (c *ContentDirectory) Browse(objectID, browseFlag, filter string, startingI
 		return nil, 0, 0, 0, fmt.Errorf("unknown browse flag: %s", browseFlag)
 	}
 
-	dirname := objectID
-	if dirname == "0" {
-		dirname = c.Path
-	}
-
-	fis, err := ioutil.ReadDir(dirname)
-	if err != nil {
-		return nil, 0, 0, 0, err
-	}
-
 	d := DIDLLite{
 		XMLNSDC:   "http://purl.org/dc/elements/1.1/",
 		XMLNSUPnP: "urn:schemas-upnp-org:metadata-1-0/upnp/",
 	}
-	for _, fi := range fis {
-		name := fi.Name()
-		if fi.IsDir() {
-			d.Containers = append(d.Containers, container{
-				ID:          filepath.Join(dirname, name),
-				Restricted:  true,
-				ParentID:    objectID,
-				Searchable:  true,
-				Title:       name,
-				Class:       classStorageFolder,
-				StorageUsed: fi.Size(),
-			})
-		} else {
-			fp := filepath.Join(dirname, name)
-			rp, err := filepath.Rel(c.Path, fp)
-			if err != nil {
-				return nil, 0, 0, 0, err
+	for i, o := range c.objects {
+		switch o := o.(type) {
+		case container:
+			if o.ParentID != objectID {
+				continue
 			}
-
-			class := classItem
-			mime := "*"
-			if m, err := mimetype.DetectFile(fp); err == nil {
-				mime = m.String()
-				switch strings.Split(mime, "/")[0] {
-				case "image":
-					class = classImageItem
-				case "audio":
-					class = classAudioItem
-				case "video":
-					class = classVideoItem
-				}
+			d.Containers = append(d.Containers, o)
+		case item:
+			if o.ParentID != objectID {
+				continue
 			}
-
-			d.Items = append(d.Items, item{
-				ID:         fp,
-				ParentID:   objectID,
-				Restricted: true,
-				Title:      name,
-				Class:      class,
-				Res: res{
-					ProtocolInfo: fmt.Sprintf("http-get:*:%s:*", mime),
-					URL:          c.url("media", rp).String(),
-				},
-			})
+			o.Res.URL = c.url("media", strconv.Itoa(i)).String()
+			d.Items = append(d.Items, o)
 		}
 	}
-	return &d, uint32(len(fis)), uint32(len(fis)), 0, nil
+	return &d, uint32(len(d.Containers) + len(d.Items)), uint32(len(d.Containers) + len(d.Items)), 0, nil
 }
 
 func (c *ContentDirectory) url(p ...string) *url.URL {
 	url := *c.BaseURL
 	url.Path = path.Join(append([]string{url.Path}, p...)...)
 	return &url
-}
-
-func requestLog(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t := time.Now()
-		rw := responseWriter{
-			ResponseWriter: w,
-			statusCode:     http.StatusOK,
-		}
-		next.ServeHTTP(&rw, r)
-		log.WithFields(log.Fields{
-			"addr":    r.RemoteAddr,
-			"method":  r.Method,
-			"elapsed": time.Since(t).Milliseconds(),
-			"ua":      r.Header.Get("User-Agent"),
-			"status":  rw.statusCode,
-		}).Info(r.URL.String())
-	})
 }
 
 type responseWriter struct {
