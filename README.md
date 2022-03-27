@@ -9,7 +9,7 @@ The easiest command to watch your contents on TV.
 You can install it via `go get`.
 
 ```console
-$ go get github.com/ichiban/cast/cmd/cast
+$ go isntall github.com/ichiban/cast/cmd/cast@latest
 ```
 
 ### Usage
@@ -23,23 +23,10 @@ $ cast
 
 You can halt the command by pressing `Ctrl+C`.
 
-Alternatively, you can specify directories or files to expose by passing path arguments.
-The example above can be written with `.` argument:
+Alternatively, you can specify the directory:
 
 ```console
-$ cast .
+$ cast -dir ~/Movies
 ```
 
-You can also expose individual file(s):
-
-```console
-$ cast a.mp4 b.mp4 c.mp4
-```
-
-Or multiple directories:
-
-```console
-$ cast ~/Pictures ~/Music ~/Movies
-```
-
-Options can be found in `cast -h`.
+Other options can be found in `cast -h`.

@@ -1,0 +1,16 @@
+<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">
+{{- range .}}
+{{- if .Class}}
+    <item id="{{.ID}}" parentID="{{.ParentID}}" restricted="{{.Restricted}}">
+        <dc:title>{{.Title}}</dc:title>
+        <upnp:class>{{.Class.String}}</upnp:class>
+        <res protocolInfo="{{.ProtocolInfo}}">{{.URL}}</res>
+    </item>
+{{- else}}
+    <container id="{{.ID}}" parentID="{{.ParentID}}" restricted="{{.Restricted}}">
+        <dc:title>{{.Title}}</dc:title>
+        <upnp:class>{{.Class.String}}</upnp:class>
+    </container>
+{{- end}}
+{{- end}}
+</DIDL-Lite>

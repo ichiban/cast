@@ -1,0 +1,26 @@
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+    <specVersion>
+        <major>1</major>
+        <minor>0</minor>
+    </specVersion>
+    <URLBase>{{.BaseURL}}</URLBase>
+    <device>
+        <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
+        <friendlyName>{{.FriendlyName}}</friendlyName>
+        <manufacturer>Cast Authors</manufacturer>
+        <modelDescription>The easiest command to watch your contents on TV</modelDescription>
+        <modelName>Cast</modelName>
+        <modelNumber>{{.Version}}</modelNumber>
+        <modelURL>https://github.com/ichiban/cast</modelURL>
+        <UDN>uuid:{{.UUID}}</UDN>
+        <serviceList>
+            <service>
+                <serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType>
+                <serviceId>urn:upnp-org:serviceId:ContentDirectory</serviceId>
+                <SCPDURL>/public/content_directory.xml</SCPDURL>
+                <controlURL>/control</controlURL>
+                <eventSubURL>/event</eventSubURL>
+            </service>
+        </serviceList>
+    </device>
+</root>

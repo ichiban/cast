@@ -2,20 +2,29 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
-	"io/ioutil"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
-	"os/signal"
-	"path/filepath"
-	"sync"
+	"time"
 
-	log "github.com/sirupsen/logrus"
-	flag "github.com/spf13/pflag"
+	uuid "github.com/satori/go.uuid"
 
 	"github.com/ichiban/cast"
-	"github.com/ichiban/cast/upnp"
+
+	log "github.com/sirupsen/logrus"
 )
+
+const (
+	defaultHTTPPort   = 8200
+	defaultSearchPort = 1900
+	defaultInterval   = 3 * time.Second
+)
+
+const wants = net.FlagUp | net.FlagBroadcast | net.FlagMulticast
 
 var defaultInterface string
 
@@ -25,7 +34,6 @@ func init() {
 		return
 	}
 
-	wants := net.FlagUp | net.FlagBroadcast | net.FlagMulticast
 	for _, i := range is {
 		if i.Flags&wants == wants {
 			defaultInterface = i.Name
@@ -37,160 +45,147 @@ func init() {
 func main() {
 	var iface string
 	var name string
+	var port int
+	var interval time.Duration
+	var dir string
 	var verbose bool
 
-	flag.StringVarP(&iface, "interface", "i", defaultInterface, "network interface")
-	flag.StringVarP(&name, "name", "n", "Cast", "friendly name that appears on your player device")
-	flag.BoolVarP(&verbose, "verbose", "v", false, "shows more logs")
+	flag.StringVar(&iface, "interface", defaultInterface, "network interface")
+	flag.StringVar(&name, "name", "Cast", "friendly name that appears on your player device")
+	flag.IntVar(&port, "port", defaultHTTPPort, "HTTP port")
+	flag.DurationVar(&interval, "interval", defaultInterval, "advertise interval")
+	flag.StringVar(&dir, "dir", ".", "path to the directory containing media files")
+	flag.BoolVar(&verbose, "verbose", false, "shows more logs")
 	flag.Parse()
 
 	if verbose {
 		log.SetLevel(log.DebugLevel)
 	}
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
-
-	done := make(chan struct{}, 1)
-	defer close(done)
-
-	i, err := net.InterfaceByName(iface)
-	if err != nil {
-		log.WithFields(log.Fields{
-			"interface": iface,
-			"err":       err,
-		}).Error("unknown interface")
-		return
-	}
-
-	path, close, err := path()
-	if err != nil {
-		log.WithFields(log.Fields{
-			"err": err,
-		}).Error("failed to get path")
-		return
-	}
-	defer close()
-
 	log.WithFields(log.Fields{
 		"interface": iface,
 		"name":      name,
+		"port":      port,
 		"verbose":   verbose,
-		"path":      path,
-	}).Info("cast")
+	}).Info("Start")
 
-	s, err := upnp.NewDevice(i, "urn:schemas-upnp-org:device:MediaServer:1", name, []upnp.Service{
-		{
-			ID:   "urn:upnp-org:serviceId:ContentDirectory",
-			Type: "urn:schemas-upnp-org:service:ContentDirectory:1",
-			Desc: &cast.Description,
-			Impl: cast.NewContentDirectory(path),
-		},
-	})
+	i, err := net.InterfaceByName(iface)
 	if err != nil {
-		log.WithFields(log.Fields{
-			"err": err,
-		}).Error("failed to create device")
-		return
+		log.WithError(err).Fatal("Unknown interface.")
 	}
 
-	var wg sync.WaitGroup
-	defer wg.Wait()
+	addr, err := localAddress(i)
+	if err != nil {
+		log.WithError(err).Fatal("Failed to get local address.")
+	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := s.Advertise(done); err != nil {
-			log.WithFields(log.Fields{
-				"err": err,
-			}).Error("failed to advertise")
-		}
-	}()
+	l, err := net.Listen("tcp", fmt.Sprintf("%s:%d", addr, port))
+	if err != nil {
+		log.WithError(err).Fatal("Failed to listen.")
+	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := s.ReplySearch(done); err != nil {
-			log.WithFields(log.Fields{
-				"err": err,
-			}).Error("failed to reply")
-		}
-	}()
+	baseURL := &url.URL{Scheme: "http", Host: l.Addr().String()}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_ = s.ListenAndServe()
-	}()
+	uuid := uuid.NewV4()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		<-sig
-		if err := s.Shutdown(context.Background()); err != nil {
-			log.WithFields(log.Fields{
-				"err": err,
-			}).Error("failed to shutdown")
-		}
-		done <- struct{}{}
-		done <- struct{}{}
-	}()
+	b := cast.Beacon{
+		Interface: i,
+		UUID:      uuid.String(),
+		BaseURL:   baseURL,
+		Interval:  interval,
+	}
+	b.SearchAddr, err = net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", addr, defaultSearchPort))
+	if err != nil {
+		log.WithError(err).Fatal("Failed to resolve search addr.")
+	}
+
+	go b.Run(context.Background())
+
+	ml, err := cast.NewMediaLibrary(baseURL.ResolveReference(&url.URL{Path: "/media/"}), dir)
+	if err != nil {
+		log.WithError(err).Fatal("Failed to create a media library.")
+	}
+
+	desc := cast.Description{
+		BaseURL:      baseURL,
+		FriendlyName: name,
+		UUID:         uuid.String(),
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/", &desc)
+	mux.HandleFunc("/control", ml.Control)
+	// mux.HandleFunc("/event", nil)
+	mux.Handle("/public/", http.FileServer(http.FS(cast.Public)))
+	mux.Handle("/media/", http.StripPrefix("/media/", http.FileServer(http.FS(os.DirFS(dir)))))
+
+	log.WithField("url", baseURL).Info("Start HTTP server.")
+	defer log.WithField("url", baseURL).Info("Stop HTTP server.")
+	switch err := http.Serve(l, requestLog(privateOnly(mux))); err {
+	case http.ErrServerClosed:
+		break
+	default:
+		log.WithError(err).Fatal("Failed to listen and serve.")
+	}
 }
 
-func path() (string, func(), error) {
-	var path string
-	var close func()
-	switch len(flag.Args()) {
-	case 0:
-		dir, err := os.Getwd()
-		if err != nil {
-			return "", nil, err
-		}
-		path = dir
-		close = func() {}
-	case 1:
-		path = flag.Args()[0]
-		var err error
-		path, err = filepath.Abs(path)
-		if err != nil {
-			return "", nil, err
-		}
-		f, err := os.Stat(path)
-		if err != nil {
-			return "", nil, err
-		}
-		if f.IsDir() {
-			close = func() {}
-			break
-		}
-		fallthrough
-	default:
-		temp, err := ioutil.TempDir("", "cast")
-		if err != nil {
-			return "", nil, err
-		}
-		close = func() { os.RemoveAll(temp) }
-
-		count := map[string]int{}
-		for _, p := range flag.Args() {
-			p, err = filepath.Abs(p)
-			if err != nil {
-				return "", nil, err
-			}
-			if _, err := os.Stat(p); err != nil {
-				return "", nil, err
-			}
-			base := filepath.Base(p)
-			count[base]++
-			if n := count[base]; n > 1 {
-				base = fmt.Sprintf("%s (%d)", base, n)
-			}
-			if err := os.Symlink(p, filepath.Join(temp, base)); err != nil {
-				return "", nil, err
-			}
-		}
-
-		path = temp
+func localAddress(i *net.Interface) (string, error) {
+	as, err := i.Addrs()
+	if err != nil {
+		return "", err
 	}
-	return path, close, nil
+
+	for _, a := range as {
+		var ip net.IP
+		switch a := a.(type) {
+		case *net.IPNet:
+			ip = a.IP
+		case *net.IPAddr:
+			ip = a.IP
+		default:
+			continue
+		}
+
+		if ip.IsLoopback() {
+			continue
+		}
+
+		if ip.To4() == nil {
+			continue
+		}
+
+		return ip.String(), nil
+	}
+
+	return "", errors.New("not found")
+}
+
+func requestLog(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.WithFields(log.Fields{
+			"addr": r.RemoteAddr,
+			"url":  r.RequestURI,
+			"ua":   r.Header.Get("User-Agent"),
+			"st":   r.Header.Get(""),
+		}).Info(r.Method)
+		h.ServeHTTP(w, r)
+	})
+}
+
+func privateOnly(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			log.WithError(err).Warn("Failed to split host:port.")
+			http.Error(w, "", http.StatusInternalServerError)
+			return
+		}
+		ip := net.ParseIP(host)
+		if !ip.IsPrivate() {
+			log.WithField("addr", r.RemoteAddr).WithField("ip", ip).Warn("not private")
+			http.Error(w, "", http.StatusUnauthorized)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
