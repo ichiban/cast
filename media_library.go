@@ -30,15 +30,7 @@ func NewMediaLibrary(baseURL *url.URL, dir string) (*MediaLibrary, error) {
 	)
 	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
-		}
-
-		// Skip if not readable.
-		fi, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if (fi.Mode().Perm() & 0400) == 0 {
+			log.WithField("path", path).WithError(err).Warn("Failed to walk")
 			return nil
 		}
 
