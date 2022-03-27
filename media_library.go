@@ -33,6 +33,15 @@ func NewMediaLibrary(baseURL *url.URL, dir string) (*MediaLibrary, error) {
 			return err
 		}
 
+		// Skip if not readable.
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if (fi.Mode().Perm() & 0400) == 0 {
+			return nil
+		}
+
 		parentID := containerIDs[filepath.Dir(path)]
 
 		if d.IsDir() {
